@@ -1,0 +1,8 @@
+# Environment for BEDTOOLS_GETFASTA — pinned exactly to the upstream
+# nf-core/bedtools/getfasta module.
+name: bedtools
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::bedtools=2.31.1

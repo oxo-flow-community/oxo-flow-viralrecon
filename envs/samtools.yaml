@@ -1,0 +1,10 @@
+# Environment for samtools rules (PREPARE_GENOME/CUSTOM_GETCHROMSIZES,
+# BAM_SORT_INDEX, BAM_SORT_INDEX_TRIMMED) — pinned exactly to the upstream
+# nf-core modules (samtools sort/index/stats/flagstat/idxstats + custom/getchromsizes).
+name: samtools
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::htslib=1.22.1
+  - bioconda::samtools=1.22.1

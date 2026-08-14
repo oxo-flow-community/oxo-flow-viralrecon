@@ -1,0 +1,17 @@
+# Environment for the merged consensus-calling rule (MAKE_BED_MASK +
+# BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS +
+# RENAME_FASTA_HEADER). Consolidates the upstream local/make_bed_mask
+# (python 3.9.5 + samtools 1.14), bedtools (2.31.1), bcftools (1.22) and
+# rename_fasta_header (sed 4.9) envs; samtools 1.14 -> 1.22.1 consolidation
+# documented in the README fidelity table.
+name: consensus
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - conda-forge::python=3.9.5
+  - bioconda::samtools=1.22.1
+  - bioconda::htslib=1.22.1
+  - bioconda::bedtools=2.31.1
+  - bioconda::bcftools=1.22
+  - conda-forge::sed=4.9

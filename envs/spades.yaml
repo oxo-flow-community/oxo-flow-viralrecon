@@ -1,0 +1,7 @@
+# Environment for SPADES — pinned exactly to the upstream nf-core/spades module.
+name: spades
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::spades=4.1.0

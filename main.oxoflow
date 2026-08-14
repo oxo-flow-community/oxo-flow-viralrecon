@@ -1,0 +1,1788 @@
+# oxo-flow port of nf-core/viralrecon 3.0.0 (default-parameters main path).
+#
+# Upstream: https://github.com/nf-core/viralrecon @ 3.0.0
+#   (sha 395079f1d24dce731ac22e03d7a5e71f110103fc)
+# Default path (illumina + amplicon): CAT_FASTQ -> FastQC(raw) -> fastp ->
+#   FastQC(trimmed) -> Kraken2 host removal -> Bowtie2 align -> iVar primer
+#   trim -> Picard CollectMultipleMetrics -> mosdepth (genome+amplicon) ->
+#   Freyja (variants/demix/boot) -> iVar variant call -> snpEff/SnpSift ->
+#   bcftools consensus -> Quast/Pangolin/Nextclade/base-density QC ->
+#   Cutadapt primer trim -> SPAdes assembly -> Bandage/Blastn/Quast/ABACAS ->
+#   variants long table -> MultiQC.
+#
+# Fidelity notes:
+# - Commands mirror the upstream nf-core module scripts byte-for-byte under
+#   default params (upstream `params.*` are reproduced as [config] keys with
+#   identical defaults; process `ext.args` are baked into the shell).
+# - Upstream `withLabel` resource profiles (cpus/memory/time) are baked into
+#   [rules.resources]; envs/*.yaml carry the exact conda pins from the
+#   upstream module environment.yml files.
+# - Merges: processes that run back-to-back inside one upstream subworkflow
+#   (e.g. SAMTOOLS_SORT+SAMTOOLS_INDEX+BAM_STATS_SAMTOOLS) become one rule
+#   whose command runs them sequentially. Every merge is listed in the
+#   README fidelity table.
+# - The default path uses amplicon protocol + iVar variant calling + SPAdes
+#   assembly. Non-amplicon (shotgun/wgs) variant calling, markduplicates and
+#   plasmidID are OFF by default exactly like upstream and are not ported.
+# - Network-download processes (KRAKEN2_BUILD human db, PANGOLIN_UPDATEDATA,
+#   FREYJA_UPDATE) are not ported; point the config at local files instead.
+# - Runtime channel filters (fastp "reads after filtering" check,
+#   min_mapped_reads gate, zero-variant-sample filter) have no oxo-flow
+#   equivalent and are documented in the fidelity table as deviations.
+
+[workflow]
+name = "oxo-flow-viralrecon"
+version = "1.0.0"
+description = "Viral assembly and intrahost variant calling: FastQC, fastp trimming, Kraken2 host removal, Bowtie2 alignment, iVar primer trimming + variant calling, snpEff/SnpSift annotation, bcftools consensus, Pangolin/Nextclade lineage calling, SPAdes de novo assembly, MultiQC"
+author = "oxo-flow-community"
+sample_group_name = "cohort"
+
+[config]
+# --- Reference files (upstream --fasta / --gff / --primer_bed) ---
+# The port expects uncompressed files at these paths. Set the *_ends_gz keys
+# to true to run the upstream GUNZIP_* steps first (outputs land at the same
+# fixed reference/ paths).
+fasta = "reference/genome.fa"
+gff = "reference/genome.gff"
+primer_bed = "reference/primers.bed"
+fasta_ends_gz = false
+gff_ends_gz = false
+primer_bed_ends_gz = false
+# --- Kraken2 host-removal database (upstream --kraken2_db, tar.gz) ---
+kraken2_db = "reference/kraken2_db.tar.gz"
+kraken2_variants_host_filter = false
+kraken2_assembly_host_filter = true
+# --- Nextclade dataset (upstream genome config for MN908947.3) ---
+nextclade_dataset = ""
+nextclade_dataset_name = "sars-cov-2"
+nextclade_dataset_tag = "2024-10-17--16-48-48Z"
+# --- Pangolin (upstream --pango_database; a directory. PANGOLIN_UPDATEDATA,
+#     the network download of the data directory, is not ported.) ---
+pango_database = "test/fixtures/refs/pangolin_db"
+# --- Freyja (upstream --freyja_barcodes / --freyja_lineages. FREYJA_UPDATE,
+#     the network download, is not ported.) ---
+freyja_barcodes = "test/fixtures/refs/freyja_barcodes.csv"
+freyja_lineages = "test/fixtures/refs/freyja_lineages.csv"
+freyja_repeats = 100
+freyja_depthcutoff = 0
+# --- Input reads (upstream samplesheet) ---
+# Directory holding raw/<sample>_R1.fastq.gz + raw/<sample>_R2.fastq.gz.
+# The repo default ships the tiny test fixtures; point this at your data.
+raw_dir = "test/fixtures/raw"
+out_dir = "results"
+# --- Platform / protocol ---
+platform = "illumina"
+protocol = "amplicon"
+# --- Variant calling (upstream params.variant_caller defaults to 'ivar' for
+#     the amplicon protocol; the bcftools variant-caller branch is not ported) ---
+variant_caller = "ivar"
+consensus_caller = "bcftools"
+min_mapped_reads = 1000
+ivar_trim_noprimer = false
+ivar_trim_offset = ""
+save_mpileup = false
+save_unaligned = false
+save_trimmed_fail = false
+# --- Consensus QC ---
+min_contig_length = 200
+min_perc_contig_aligned = 0.7
+# --- Assembly (only the upstream default 'spades' assembler is ported) ---
+assemblers = "spades"
+spades_mode = "rnaviral"
+# --- Primer trimming for assembly ---
+primer_left_suffix = "_LEFT"
+primer_right_suffix = "_RIGHT"
+threeprime_adapters = false
+# --- Skip flags (identical defaults to upstream params) ---
+skip_fastqc = false
+skip_fastp = false
+skip_kraken2 = false
+skip_variants = false
+skip_picard_metrics = false
+skip_markduplicates = true
+skip_mosdepth = false
+skip_ivar_trim = false
+skip_freyja = false
+skip_freyja_boot = false
+skip_consensus = false
+skip_variants_quast = false
+skip_pangolin = false
+skip_nextclade = false
+skip_snpeff = false
+skip_variants_long_table = false
+skip_consensus_plots = false
+skip_assembly = false
+skip_assembly_quast = false
+skip_abacas = false
+skip_bandage = false
+skip_blast = false
+skip_cutadapt = false
+skip_noninternal_primers = false
+skip_plasmidid = true
+# --- MultiQC ---
+multiqc_title = ""
+
+[[sample_groups]]
+name = "cohort"
+samples = ["S1", "S2"]
+
+# ---------------------------------------------------------------------------
+# 1. Reference preparation (upstream PREPARE_GENOME_ILLUMINA subworkflow:
+#    GUNZIP_* / UNTAR_* / CUSTOM_GETCHROMSIZES / COLLAPSE_PRIMERS /
+#    BEDTOOLS_GETFASTA / BOWTIE2_BUILD / NEXTCLADE_DATASETGET /
+#    BLAST_MAKEBLASTDB / SNPEFF_BUILD)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "gunzip_fasta"
+input = ["{config.fasta}"]
+output = ["reference/genome.fa"]
+description = "Uncompress the reference FASTA (upstream GUNZIP_FASTA)"
+when = "config.fasta_ends_gz"
+shell = """
+gzip -cd {input[0]} > {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "gunzip_gff"
+input = ["{config.gff}"]
+output = ["reference/genome.gff"]
+description = "Uncompress the GFF annotation (upstream GUNZIP_GFF)"
+when = "config.gff_ends_gz"
+shell = """
+gzip -cd {input[0]} > {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "gunzip_primer_bed"
+input = ["{config.primer_bed}"]
+output = ["reference/primers.bed"]
+description = "Uncompress the primer BED file (upstream GUNZIP_PRIMER_BED)"
+when = "config.primer_bed_ends_gz"
+shell = """
+gzip -cd {input[0]} > {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "prepare_genome"
+input = ["reference/genome.fa"]
+output = ["reference/genome.fa.fai", "reference/genome.sizes"]
+description = "Index the reference and create the chromosome sizes file (upstream CUSTOM_GETCHROMSIZES)"
+shell = """
+samtools faidx {input[0]}
+cut -f 1,2 {input[0]}.fai > {output[1]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/samtools.yaml"
+
+[[rules]]
+name = "untar_kraken2_db"
+input = ["{config.kraken2_db}"]
+output = ["reference/kraken2_db"]
+description = "Extract the Kraken2 database tarball (upstream UNTAR_KRAKEN2_DB)"
+when = "!config.skip_kraken2"
+shell = """
+mkdir -p reference/kraken2_db
+# --no-same-owner = upstream UNTAR ext.args2 (applied to all PREPARE_GENOME
+# UNTAR_* processes); matters when extracting as root from a non-root tarball
+if [[ $(tar -taf {input[0]} | grep -o -P "^.*?\\/" | uniq | wc -l) -eq 1 ]]; then
+    tar -C reference/kraken2_db --no-same-owner --strip-components 1 -xavf {input[0]}
+else
+    tar -C reference/kraken2_db --no-same-owner -xavf {input[0]}
+fi
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "collapse_primers"
+input = ["reference/primers.bed"]
+output = ["reference/primers.collapsed.bed"]
+description = "Collapse primer pairs into amplicon intervals (upstream COLLAPSE_PRIMERS, process_medium label)"
+when = "config.protocol == 'amplicon' && !config.skip_variants && !config.skip_mosdepth"
+shell = """
+collapse_primer_bed.py \\
+    --left_primer_suffix {config.primer_left_suffix} \\
+    --right_primer_suffix {config.primer_right_suffix} \\
+    {input[0]} \\
+    {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/python.yaml"
+
+[[rules]]
+name = "get_primer_fasta"
+input = ["reference/primers.bed", "reference/genome.fa"]
+output = ["reference/primers.fa"]
+description = "Extract primer sequences from the reference (upstream BEDTOOLS_GETFASTA)"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt"
+shell = """
+bedtools getfasta -s -nameOnly -fi {input[1]} -bed {input[0]} -fo {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/bedtools.yaml"
+
+[[rules]]
+name = "build_bowtie2_index"
+input = ["reference/genome.fa"]
+output = [
+    "reference/bowtie2/genome.fa.1.bt2",
+    "reference/bowtie2/genome.fa.2.bt2",
+    "reference/bowtie2/genome.fa.3.bt2",
+    "reference/bowtie2/genome.fa.4.bt2",
+    "reference/bowtie2/genome.fa.rev.1.bt2",
+    "reference/bowtie2/genome.fa.rev.2.bt2",
+]
+description = "Build the Bowtie2 index from the reference (upstream BOWTIE2_BUILD, process_high label)"
+when = "!config.skip_variants"
+shell = """
+mkdir -p reference/bowtie2
+bowtie2-build --seed 1 --threads {threads} {input[0]} reference/bowtie2/genome.fa
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/bowtie2.yaml"
+
+[[rules]]
+name = "get_nextclade_dataset"
+input = ["reference/genome.fa"]
+output = ["reference/nextclade_db"]
+description = "Download the Nextclade dataset (upstream NEXTCLADE_DATASETGET)"
+when = "!config.skip_consensus && !config.skip_nextclade && config.nextclade_dataset == ''"
+shell = """
+nextclade dataset get \\
+    --name {config.nextclade_dataset_name} \\
+    --tag {config.nextclade_dataset_tag} \\
+    --output-dir {output[0]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/nextclade.yaml"
+
+[[rules]]
+name = "make_blast_db"
+input = ["reference/genome.fa"]
+output = [
+    "reference/blastdb/genome.fa.nin",
+    "reference/blastdb/genome.fa.nsq",
+    "reference/blastdb/genome.fa.nhr",
+]
+description = "Build the BLAST nucleotide database from the reference (upstream BLAST_MAKEBLASTDB)"
+when = "!config.skip_assembly && !config.skip_blast"
+shell = """
+mkdir -p reference/blastdb
+makeblastdb \\
+    -in {input[0]} \\
+    -out reference/blastdb/genome.fa \\
+    -parse_seqids -dbtype nucl
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/blast.yaml"
+
+[[rules]]
+name = "build_snpeff_db"
+input = ["reference/genome.fa", "reference/genome.gff"]
+output = ["reference/snpeff_db", "reference/snpeff.config"]
+description = "Build the snpEff database from the reference (upstream SNPEFF_BUILD)"
+when = "!config.skip_variants && !config.skip_snpeff"
+shell = """
+mkdir -p reference/snpeff_db/genomes/
+cd reference/snpeff_db/genomes/
+ln -s ../../genome.fa genome.fa
+cd ../../
+mkdir -p reference/snpeff_db/genome/
+cd reference/snpeff_db/genome/
+ln -s ../../genome.gff genes.gff3
+cd ../../
+echo "genome.genome : genome" > reference/snpeff.config
+# -Xmx12g = upstream task.memory.giga (process_low = 12GB)
+snpEff \\
+    -Xmx12g \\
+    build \\
+    -config reference/snpeff.config \\
+    -dataDir ./reference/snpeff_db \\
+    -gff3 \\
+    -v \\
+    genome
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/snpeff.yaml"
+
+# ---------------------------------------------------------------------------
+# 2. Read QC (upstream CAT_FASTQ -> FASTQ_TRIM_FASTP_FASTQC subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "cat_fastq"
+input = ["{config.raw_dir}/{sample}_R1.fastq.gz", "{config.raw_dir}/{sample}_R2.fastq.gz"]
+output = ["fastp/{sample}_1.fastq.gz", "fastp/{sample}_2.fastq.gz"]
+description = "Concatenate per-sample FastQ files (upstream CAT_FASTQ)"
+shell = """
+cat {input[0]} > {output[0]}
+cat {input[1]} > {output[1]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "fastqc_raw"
+input = ["{config.raw_dir}/{sample}_R1.fastq.gz", "{config.raw_dir}/{sample}_R2.fastq.gz"]
+output = [
+    "{config.out_dir}/fastqc/raw/{sample}_1_fastqc.html",
+    "{config.out_dir}/fastqc/raw/{sample}_2_fastqc.html",
+    "{config.out_dir}/fastqc/raw/{sample}_1_fastqc.zip",
+    "{config.out_dir}/fastqc/raw/{sample}_2_fastqc.zip",
+]
+description = "FastQC on the raw reads (upstream FASTQC_RAW)"
+when = "!config.skip_fastqc"
+shell = """
+mkdir -p {config.out_dir}/fastqc/raw
+# Upstream symlinks the reads to <sample>_{1,2}.fastq.gz before running
+# FastQC (nf-core fastqc module), so FastQC output names ({sample}_{1,2}_fastqc.*)
+# match the declared outputs instead of the raw basenames
+[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
+[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+fastqc \\
+    --quiet \\
+    --threads {threads} \\
+    --memory 6144 \\
+    {sample}_1.fastq.gz \\
+    {sample}_2.fastq.gz
+mv {sample}_1_fastqc.html {output[0]}
+mv {sample}_2_fastqc.html {output[1]}
+mv {sample}_1_fastqc.zip {output[2]}
+mv {sample}_2_fastqc.zip {output[3]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/fastqc.yaml"
+
+[[rules]]
+name = "fastp"
+input = ["fastp/{sample}_1.fastq.gz", "fastp/{sample}_2.fastq.gz"]
+output = [
+    "fastp/{sample}_1.fastp.fastq.gz",
+    "fastp/{sample}_2.fastp.fastq.gz",
+    "fastp/{sample}.fastp.json",
+    "fastp/{sample}.fastp.html",
+    "fastp/log/{sample}.fastp.log",
+]
+description = "Adapter trimming with fastp (upstream FASTP, ext.args verbatim)"
+when = "!config.skip_fastp"
+shell = """
+mkdir -p fastp fastp/log
+# Upstream symlinks the input reads to <prefix>_1/2.fastq.gz before trimming
+[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
+[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+fastp \\
+    --in1 {sample}_1.fastq.gz \\
+    --in2 {sample}_2.fastq.gz \\
+    --out1 {output[0]} \\
+    --out2 {output[1]} \\
+    --json {output[2]} \\
+    --html {output[3]} \\
+    --thread {threads} \\
+    --detect_adapter_for_pe \\
+    --cut_front --cut_tail --trim_poly_x --cut_mean_quality 30 \\
+    --qualified_quality_phred 30 --unqualified_percent_limit 10 \\
+    --length_required 50 \\
+    2>| >(tee {output[4]} >&2)
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/fastp.yaml"
+
+[[rules]]
+name = "fastqc_trim"
+input = ["fastp/{sample}_1.fastp.fastq.gz", "fastp/{sample}_2.fastp.fastq.gz"]
+output = [
+    "{config.out_dir}/fastqc/trim/{sample}_1_fastqc.html",
+    "{config.out_dir}/fastqc/trim/{sample}_2_fastqc.html",
+    "{config.out_dir}/fastqc/trim/{sample}_1_fastqc.zip",
+    "{config.out_dir}/fastqc/trim/{sample}_2_fastqc.zip",
+]
+description = "FastQC on the trimmed reads (upstream FASTQC_TRIM)"
+when = "!config.skip_fastp && !config.skip_fastqc"
+shell = """
+mkdir -p {config.out_dir}/fastqc/trim
+# Upstream symlinks the trimmed reads to <sample>_{1,2}.fastq.gz before
+# running FastQC, so FastQC output names ({sample}_{1,2}_fastqc.*) match the
+# declared outputs instead of the fastp basenames
+[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
+[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+fastqc \\
+    --quiet \\
+    --threads {threads} \\
+    --memory 6144 \\
+    {sample}_1.fastq.gz \\
+    {sample}_2.fastq.gz
+mv {sample}_1_fastqc.html {output[0]}
+mv {sample}_2_fastqc.html {output[1]}
+mv {sample}_1_fastqc.zip {output[2]}
+mv {sample}_2_fastqc.zip {output[3]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/fastqc.yaml"
+
+# ---------------------------------------------------------------------------
+# 3. Host removal and alignment (upstream KRAKEN2_KRAKEN2 ->
+#    FASTQ_ALIGN_BOWTIE2 subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "kraken2"
+input = ["fastp/{sample}_1.fastp.fastq.gz", "fastp/{sample}_2.fastp.fastq.gz", "reference/kraken2_db"]
+output = [
+    "kraken2/{sample}.kraken2.report.txt",
+    "kraken2/{sample}.unclassified_1.fastq.gz",
+    "kraken2/{sample}.unclassified_2.fastq.gz",
+]
+description = "Classify and filter host reads with Kraken2 (upstream KRAKEN2_KRAKEN2)"
+when = "!config.skip_kraken2"
+depends_on = ["untar_kraken2_db"]
+shell = """
+mkdir -p kraken2
+kraken2 \\
+    --db {input[2]} \\
+    --threads {threads} \\
+    --report {output[0]} \\
+    --gzip-compressed \\
+    --unclassified-out {sample}.unclassified#.fastq \\
+    --classified-out {sample}.classified#.fastq \\
+    --output /dev/null \\
+    --paired \\
+    --report-zero-counts \\
+    {input[0]} \\
+    {input[1]}
+pigz -p {threads} {sample}.classified#.fastq {sample}.unclassified#.fastq
+mv {sample}.unclassified_1.fastq.gz {output[1]}
+mv {sample}.unclassified_2.fastq.gz {output[2]}
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/kraken2.yaml"
+
+[[rules]]
+name = "align_bowtie2"
+input = [
+    "fastp/{sample}_1.fastp.fastq.gz",
+    "fastp/{sample}_2.fastp.fastq.gz",
+    "reference/bowtie2/genome.fa.1.bt2",
+    "reference/bowtie2/genome.fa.2.bt2",
+    "reference/bowtie2/genome.fa.3.bt2",
+    "reference/bowtie2/genome.fa.4.bt2",
+    "reference/bowtie2/genome.fa.rev.1.bt2",
+    "reference/bowtie2/genome.fa.rev.2.bt2",
+]
+output = [
+    "variants/bowtie2/{sample}.bam",
+    "variants/bowtie2/log/{sample}.bowtie2.log",
+]
+description = "Map reads to the reference with Bowtie2 and filter unmapped reads (upstream BOWTIE2_ALIGN)"
+when = "!config.skip_variants"
+shell = """
+mkdir -p variants/bowtie2 variants/bowtie2/log
+INDEX=`find -L reference/bowtie2 -name "*.rev.1.bt2" | sed "s/\\.rev.1.bt2$//"`
+[ -z "$INDEX" ] && INDEX=`find -L reference/bowtie2 -name "*.rev.1.bt2l" | sed "s/\\.rev.1.bt2l$//"`
+[ -z "$INDEX" ] && echo "Bowtie2 index files not found" 1>&2 && exit 1
+bowtie2 \\
+    -x $INDEX \\
+    -1 {input[0]} -2 {input[1]} \\
+    --threads {threads} \\
+    --local --very-sensitive-local --seed 1 \\
+    2>| >(tee {output[1]} >&2) \\
+    | samtools view -F4 -bhS --threads {threads} -o {output[0]} -
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/bowtie2.yaml"
+
+[[rules]]
+name = "bam_sort_index"
+input = ["variants/bowtie2/{sample}.bam"]
+output = [
+    "variants/bowtie2/{sample}.sorted.bam",
+    "variants/bowtie2/{sample}.sorted.bam.bai",
+    "variants/bowtie2/samtools_stats/{sample}.sorted.bam.stats",
+    "variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat",
+    "variants/bowtie2/samtools_stats/{sample}.sorted.bam.idxstats",
+]
+description = "Sort, index and collect stats for the aligned BAM (upstream SAMTOOLS_SORT + SAMTOOLS_INDEX + BAM_STATS_SAMTOOLS)"
+when = "!config.skip_variants"
+shell = """
+mkdir -p variants/bowtie2/samtools_stats
+samtools sort \\
+    -T {sample}.sorted \\
+    --threads {threads} \\
+    -o {output[0]} \\
+    {input[0]}
+samtools index -@ {threads} {output[0]}
+samtools stats --threads {threads} {output[0]} > {output[2]}
+samtools flagstat --threads {threads} {output[0]} > {output[3]}
+samtools idxstats --threads {threads} {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/samtools.yaml"
+
+# ---------------------------------------------------------------------------
+# 4. Primer trimming (upstream BAM_TRIM_PRIMERS_IVAR subworkflow, amplicon)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "ivar_trim"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/primers.bed"]
+output = [
+    "variants/bowtie2/{sample}.ivar_trim.bam",
+    "variants/bowtie2/log/{sample}.ivar_trim.ivar.log",
+]
+description = "Trim primer sequences from the aligned BAM with iVar (upstream IVAR_TRIM)"
+when = "!config.skip_variants && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/log
+# Upstream ext.args: -m 30 -q 20 [-e] [-x offset]
+ivar_args="-m 30 -q 20"
+[ "{config.ivar_trim_noprimer}" = "false" ] && ivar_args="$ivar_args -e"
+[ -n "{config.ivar_trim_offset}" ] && ivar_args="$ivar_args -x {config.ivar_trim_offset}"
+ivar trim \\
+    $ivar_args \\
+    -i {input[0]} \\
+    -b {input[1]} \\
+    -p {sample}.ivar_trim \\
+    > {output[1]}
+mv {sample}.ivar_trim.bam {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/ivar.yaml"
+
+[[rules]]
+name = "bam_sort_index_trimmed"
+input = ["variants/bowtie2/{sample}.ivar_trim.bam"]
+output = [
+    "variants/bowtie2/{sample}.ivar_trim.sorted.bam",
+    "variants/bowtie2/{sample}.ivar_trim.sorted.bam.bai",
+    "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.stats",
+    "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.flagstat",
+    "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.idxstats",
+]
+description = "Sort, index and collect stats for the primer-trimmed BAM (upstream BAM_SORT_STATS_SAMTOOLS)"
+when = "!config.skip_variants && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/samtools_stats
+samtools sort \\
+    -T {sample}.ivar_trim.sorted \\
+    --threads {threads} \\
+    -o {output[0]} \\
+    {input[0]}
+samtools index -@ {threads} {output[0]}
+samtools stats --threads {threads} {output[0]} > {output[2]}
+samtools flagstat --threads {threads} {output[0]} > {output[3]}
+samtools idxstats --threads {threads} {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/samtools.yaml"
+
+# ---------------------------------------------------------------------------
+# 5. Alignment QC (upstream PICARD_COLLECTMULTIPLEMETRICS + MOSDEPTH)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "picard_metrics"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.alignment_summary_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.base_distribution_by_cycle_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.insert_size_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_by_cycle_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_distribution_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.pdf",
+]
+description = "Collect alignment metrics with Picard (upstream PICARD_COLLECTMULTIPLEMETRICS)"
+when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/picard_metrics
+# -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
+picard \\
+    -Xmx4800M \\
+    CollectMultipleMetrics \\
+    --VALIDATION_STRINGENCY LENIENT --TMP_DIR tmp \\
+    --INPUT {input[0]} \\
+    --OUTPUT variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics \\
+    --REFERENCE_SEQUENCE {input[1]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/picard.yaml"
+
+[[rules]]
+name = "mosdepth_genome"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam"]
+output = [
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.summary.txt",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.global.dist.txt",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.per-base.bed.gz",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.regions.bed.gz",
+]
+description = "Genome-wide coverage with mosdepth (upstream MOSDEPTH_GENOME)"
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/mosdepth/genome
+mosdepth \\
+    --threads {threads} \\
+    --fast-mode --by 200 \\
+    variants/bowtie2/mosdepth/genome/{sample}.mosdepth \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/mosdepth.yaml"
+
+[[rules]]
+name = "plot_mosdepth_genome"
+input = ["variants/bowtie2/mosdepth/genome/*.regions.bed.gz"]
+output = [
+    "variants/bowtie2/mosdepth/genome/all_samples.mosdepth.coverage.tsv",
+    "variants/bowtie2/mosdepth/genome/all_samples.mosdepth.heatmap.tsv",
+    "variants/bowtie2/mosdepth/genome/all_samples.mosdepth.heatmap.pdf",
+]
+description = "Coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS_GENOME)"
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+depends_on = ["mosdepth_genome"]
+shell = """
+plot_mosdepth_regions.r \\
+    --input_files $(echo {input} | tr ' ' ',') \\
+    --output_dir ./ \\
+    --output_suffix mosdepth \\
+    --input_suffix .regions.bed.gz
+mkdir -p variants/bowtie2/mosdepth/genome
+mv all_samples.mosdepth.coverage.tsv {output[0]}
+mv all_samples.mosdepth.heatmap.tsv {output[1]}
+mv all_samples.mosdepth.heatmap.pdf {output[2]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/r.yaml"
+
+[[rules]]
+name = "mosdepth_amplicon"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/primers.collapsed.bed"]
+output = [
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.summary.txt",
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.global.dist.txt",
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.per-base.bed.gz",
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.regions.bed.gz",
+]
+description = "Amplicon coverage with mosdepth (upstream MOSDEPTH_AMPLICON)"
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/mosdepth/amplicon
+mosdepth \\
+    --threads {threads} \\
+    --fast-mode --use-median --thresholds 0,1,10,50,100,500 \\
+    --by {input[1]} \\
+    variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/mosdepth.yaml"
+
+[[rules]]
+name = "plot_mosdepth_amplicon"
+input = ["variants/bowtie2/mosdepth/amplicon/*.regions.bed.gz"]
+output = [
+    "variants/bowtie2/mosdepth/amplicon/all_samples.mosdepth.coverage.tsv",
+    "variants/bowtie2/mosdepth/amplicon/all_samples.mosdepth.heatmap.tsv",
+    "variants/bowtie2/mosdepth/amplicon/all_samples.mosdepth.heatmap.pdf",
+]
+description = "Amplicon coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS_AMPLICON)"
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+depends_on = ["mosdepth_amplicon"]
+shell = """
+plot_mosdepth_regions.r \\
+    --input_files $(echo {input} | tr ' ' ',') \\
+    --output_dir ./ \\
+    --output_suffix mosdepth \\
+    --input_suffix .regions.bed.gz
+mkdir -p variants/bowtie2/mosdepth/amplicon
+mv all_samples.mosdepth.coverage.tsv {output[0]}
+mv all_samples.mosdepth.heatmap.tsv {output[1]}
+mv all_samples.mosdepth.heatmap.pdf {output[2]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/r.yaml"
+
+# ---------------------------------------------------------------------------
+# 6. Freyja lineage deconvolution (upstream BAM_VARIANT_DEMIX_BOOT_FREYJA)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "freyja_variants"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+]
+description = "Call variants and depths for Freyja (upstream FREYJA_VARIANTS)"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/freyja/variants
+freyja \\
+    variants \\
+    --ref {input[1]} \\
+    --variants {output[0]} \\
+    --depths {output[1]} \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
+name = "freyja_demix"
+input = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+    "{config.freyja_barcodes}",
+    "{config.freyja_lineages}",
+]
+output = ["variants/freyja/demix/{sample}.tsv"]
+description = "Deconvolute the sample lineage mixture with Freyja (upstream FREYJA_DEMIX)"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/freyja/demix
+args=""
+[ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff}"
+freyja \\
+    demix \\
+    $args \\
+    --output {output[0]} \\
+    --barcodes {input[2]} \\
+    --meta {input[3]} \\
+    {input[0]} \\
+    {input[1]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
+name = "freyja_boot"
+input = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+    "{config.freyja_barcodes}",
+    "{config.freyja_lineages}",
+]
+output = [
+    "variants/freyja/bootstrap/{sample}.lineages.csv",
+    "variants/freyja/bootstrap/{sample}_summarized.csv",
+]
+description = "Bootstrap the lineage assignment with Freyja (upstream FREYJA_BOOT)"
+when = "!config.skip_variants && !config.skip_freyja && !config.skip_freyja_boot && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/freyja/bootstrap
+args="--boxplot pdf"
+[ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff} --boxplot pdf"
+freyja \\
+    boot \\
+    $args \\
+    --nt {threads} \\
+    --nb {config.freyja_repeats} \\
+    --output_base variants/freyja/bootstrap/{sample}.boot \\
+    --barcodes {input[2]} \\
+    --meta {input[3]} \\
+    {input[0]} \\
+    {input[1]}
+mv variants/freyja/bootstrap/{sample}.boot.lineages.csv {output[0]}
+mv variants/freyja/bootstrap/{sample}.boot_summarized.csv {output[1]}
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+# ---------------------------------------------------------------------------
+# 7. Variant calling (upstream VARIANTS_IVAR subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "call_variants_ivar"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa", "reference/genome.gff"]
+output = ["variants/ivar/{sample}.tsv"]
+description = "Call intrahost variants with iVar (upstream IVAR_VARIANTS)"
+when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar
+samtools \\
+    mpileup \\
+    --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 \\
+    --reference {input[1]} \\
+    {input[0]} \\
+    | ivar \\
+        variants \\
+        -t 0.25 -q 20 -m 10 \\
+        -g {input[2]} \\
+        -r {input[1]} \\
+        -p {sample}
+mv {sample}.tsv {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/ivar_mpileup.yaml"
+
+[[rules]]
+name = "ivar_to_vcf"
+input = ["variants/ivar/{sample}.tsv", "reference/genome.fa", "scripts/ivar_variants_header_mqc.txt"]
+output = [
+    "variants/ivar/{sample}.vcf",
+    "variants/ivar/{sample}.variant_counts.log",
+    "variants/ivar/{sample}.variant_counts_mqc.tsv",
+]
+description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
+when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+shell = """
+ivar_variants_to_vcf.py \\
+    {input[0]} \\
+    {output[0]} \\
+    --fasta {input[1]} \\
+    --ignore_strand_bias \\
+    > {output[1]}
+cat {input[2]} {output[1]} > {output[2]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/ivar_vcf.yaml"
+
+[[rules]]
+name = "sort_vcf"
+input = ["variants/ivar/{sample}.vcf"]
+output = [
+    "variants/ivar/{sample}.sorted.vcf.gz",
+    "variants/ivar/{sample}.sorted.vcf.gz.tbi",
+    "variants/ivar/{sample}.bcftools_stats.txt",
+]
+description = "Sort, index and collect stats for the called VCF (upstream BCFTOOLS_SORT + VCF_TABIX_STATS, process_medium label)"
+when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+shell = """
+bcftools sort \\
+    --output {output[0]} \\
+    --temp-dir . \\
+    {input[0]}
+tabix --threads {threads} -p vcf -f {output[0]}
+bcftools stats {output[0]} > {output[2]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
+name = "snpeff_ann"
+input = ["variants/ivar/{sample}.sorted.vcf.gz", "reference/genome.fa", "reference/snpeff_db", "reference/snpeff.config"]
+output = [
+    "variants/ivar/snpeff/{sample}.snpeff.vcf.gz",
+    "variants/ivar/snpeff/{sample}.snpeff.vcf.gz.tbi",
+    "variants/ivar/snpeff/{sample}.snpeff.csv",
+    "variants/ivar/snpeff/{sample}.snpeff.summary.html",
+    "variants/ivar/snpeff/bcftools_stats/{sample}.snpeff.bcftools_stats.txt",
+]
+description = "Annotate variants with snpEff, then bgzip/tabix/stats (upstream SNPEFF_ANN + VCF_BGZIP_TABIX_STATS)"
+when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'amplicon'"
+depends_on = ["build_snpeff_db"]
+shell = """
+mkdir -p variants/ivar/snpeff/bcftools_stats
+# -Xmx36g = upstream task.memory.giga (process_medium = 36GB)
+snpEff \\
+    -Xmx36g \\
+    genome \\
+    -config reference/snpeff.config \\
+    -dataDir reference/snpeff_db \\
+    {input[0]} \\
+    -csvStats {output[2]} \\
+    > variants/ivar/snpeff/{sample}.snpeff.vcf
+mv snpEff_summary.html {output[3]}
+bgzip -c -@ {threads} variants/ivar/snpeff/{sample}.snpeff.vcf > {output[0]}
+rm variants/ivar/snpeff/{sample}.snpeff.vcf
+tabix --threads {threads} -p vcf -f {output[0]}
+bcftools stats {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/snpeff.yaml"
+
+[[rules]]
+name = "snpsift_extract"
+input = ["variants/ivar/snpeff/{sample}.snpeff.vcf.gz"]
+output = ["variants/ivar/snpeff/{sample}.snpsift.txt"]
+description = "Extract annotation fields with SnpSift (upstream SNPSIFT_EXTRACTFIELDS)"
+when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'amplicon'"
+shell = """
+# -Xmx36g = upstream task.memory.giga (process_medium = 36GB)
+SnpSift \\
+    -Xmx36g \\
+    extractFields \\
+    -s "," \\
+    -e "." \\
+    {input[0]} \\
+    CHROM POS REF ALT \\
+    "ANN[*].GENE" "ANN[*].GENEID" \\
+    "ANN[*].IMPACT" "ANN[*].EFFECT" \\
+    "ANN[*].FEATURE" "ANN[*].FEATUREID" \\
+    "ANN[*].BIOTYPE" "ANN[*].RANK" "ANN[*].HGVS_C" \\
+    "ANN[*].HGVS_P" "ANN[*].CDNA_POS" "ANN[*].CDNA_LEN" \\
+    "ANN[*].CDS_POS" "ANN[*].CDS_LEN" "ANN[*].AA_POS" \\
+    "ANN[*].AA_LEN" "ANN[*].DISTANCE" "EFF[*].EFFECT" \\
+    "EFF[*].FUNCLASS" "EFF[*].CODON" "EFF[*].AA" "EFF[*].AA_LEN" \\
+    > {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/snpeff.yaml"
+
+# ---------------------------------------------------------------------------
+# 8. Consensus calling (upstream CONSENSUS_BCFTOOLS subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "consensus_filter"
+input = ["variants/ivar/{sample}.sorted.vcf.gz"]
+output = [
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz",
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
+]
+description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX)"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools
+bcftools filter \\
+    --output {output[0]} \\
+    --threads {threads} \\
+    --output-type z \\
+    --include 'FORMAT/ALT_FREQ >= 0.75' \\
+    {input[0]}
+tabix --threads {threads} -p vcf -f {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
+name = "consensus_call"
+input = [
+    "variants/bowtie2/{sample}.ivar_trim.sorted.bam",
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz",
+    "reference/genome.fa",
+]
+output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
+description = "Mask low-coverage positions and call the consensus sequence (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER)"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon'"
+shell = """
+samtools \\
+    mpileup \\
+    -a --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 \\
+    --reference {input[2]} \\
+    {input[0]} \\
+    | awk -v OFS='\\t' '{print $1, $2-1, $2, $4}' | awk '$4 < 10' > lowcov_positions.txt
+make_bed_mask.py \\
+    {input[1]} \\
+    lowcov_positions.txt \\
+    {sample}.coverage.masked.bed
+bedtools \\
+    merge \\
+    -i {sample}.coverage.masked.bed \\
+    > {sample}.coverage.merged.bed
+bedtools \\
+    maskfasta \\
+    -fi {input[2]} \\
+    -bed {sample}.coverage.merged.bed \\
+    -fo {sample}.masked.fa
+cat {sample}.masked.fa \\
+    | bcftools \\
+        consensus \\
+        {input[1]} \\
+        > {sample}.consensus.fa
+sed "s/>/>{sample} /g" {sample}.consensus.fa > {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/consensus.yaml"
+
+# ---------------------------------------------------------------------------
+# 9. Consensus QC (upstream CONSENSUS_QC subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "quast_consensus"
+input = ["variants/ivar/consensus/bcftools/*.consensus.fa", "reference/genome.fa", "reference/genome.gff"]
+output = [
+    "variants/ivar/consensus/bcftools/quast.consensus",
+    "variants/ivar/consensus/bcftools/quast.consensus.tsv",
+]
+description = "Assembly QC across consensus sequences with QUAST (upstream QUAST, consensus branch)"
+when = "!config.skip_consensus && !config.skip_variants_quast && config.protocol == 'amplicon'"
+depends_on = ["consensus_call"]
+shell = """
+quast.py \\
+    --output-dir {output[0]} \\
+    -r {input[1]} \\
+    --features {input[2]} \\
+    --threads {threads} \\
+    {input[0]}
+ln -s {output[0]}/report.tsv {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/quast.yaml"
+
+[[rules]]
+name = "pangolin"
+input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "{config.pango_database}"]
+output = ["variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv"]
+description = "Assign lineages with Pangolin (upstream PANGOLIN_RUN)"
+when = "!config.skip_consensus && !config.skip_pangolin && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools/pangolin
+export XDG_CACHE_HOME=/tmp/.cache
+pangolin \\
+    {input[0]} \\
+    --datadir {input[1]} \\
+    --outfile {output[0]} \\
+    --threads {threads}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/pangolin.yaml"
+
+[[rules]]
+name = "nextclade"
+input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/nextclade_db"]
+output = ["variants/ivar/consensus/bcftools/nextclade/{sample}.csv"]
+description = "Assign clades with Nextclade (upstream NEXTCLADE_RUN)"
+when = "!config.skip_consensus && !config.skip_nextclade && config.protocol == 'amplicon'"
+depends_on = ["get_nextclade_dataset"]
+shell = """
+mkdir -p variants/ivar/consensus/bcftools/nextclade
+nextclade \\
+    run \\
+    --jobs {threads} \\
+    --input-dataset {input[1]} \\
+    --output-all variants/ivar/consensus/bcftools/nextclade/ \\
+    --output-basename {sample} \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/nextclade.yaml"
+
+[[rules]]
+name = "plot_base_density"
+input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
+output = [
+    "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.base_counts.tsv",
+    "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.base_counts.pdf",
+    "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.N_run.tsv",
+    "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.ACTG_density.pdf",
+]
+description = "Plot consensus base density (upstream PLOT_BASE_DENSITY)"
+when = "!config.skip_consensus && !config.skip_consensus_plots && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools/base_qc
+plot_base_density.r \\
+    --fasta_files {input[0]} \\
+    --prefixes {sample}.consensus \\
+    --output_dir variants/ivar/consensus/bcftools/base_qc/
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/r.yaml"
+
+[[rules]]
+name = "nextclade_clade_mqc"
+input = ["variants/ivar/consensus/bcftools/nextclade/*.csv"]
+output = ["variants/ivar/consensus/bcftools/nextclade/nextclade_clade_mqc.tsv"]
+description = "Build the per-sample clade table for MultiQC (upstream Nextflow channel code getNextcladeFieldMapFromCsv + multiqcTsvFromList; ported as an inline script)"
+when = "!config.skip_consensus && !config.skip_nextclade && config.protocol == 'amplicon'"
+depends_on = ["nextclade"]
+shell = """
+python3 - <<'PY'
+import csv, glob, os
+rows = []
+for path in sorted(glob.glob('variants/ivar/consensus/bcftools/nextclade/*.csv')):
+    if os.path.basename(path) == 'nextclade_clade_mqc.tsv':
+        continue
+    with open(path) as f:
+        r = csv.DictReader(f)
+        row = next(r, None)
+        if row is not None:
+            rows.append([os.path.basename(path).split('.')[0], row['clade']])
+with open('{output[0]}', 'w') as f:
+    w = csv.writer(f, delimiter='\\t', lineterminator='\\n')
+    w.writerow(['Sample', 'clade'])
+    w.writerows(rows)
+PY
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/python.yaml"
+
+[[rules]]
+name = "variants_long_table"
+input = [
+    "variants/ivar/*.sorted.vcf.gz",
+    "variants/ivar/snpeff/*.snpsift.txt",
+    "variants/ivar/consensus/bcftools/pangolin/*.pangolin.csv",
+]
+output = ["variants/ivar/variants_long_table.csv"]
+description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE)"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.protocol == 'amplicon'"
+depends_on = ["sort_vcf", "snpsift_extract", "pangolin"]
+shell = """
+mkdir -p bcftools_query snpsift pangolin
+for vcf in {input[0]}; do
+    s=$(basename "$vcf" .sorted.vcf.gz)
+    bcftools query \\
+        -H -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%REF_DP\\t]\\t[%ALT_DP\\t]\\n' \\
+        "$vcf" \\
+        > bcftools_query/${s}.bcftools_query.txt
+done
+for txt in {input[1]}; do
+    s=$(basename "$txt" .snpsift.txt)
+    ln -sf "$PWD/$txt" snpsift/${s}.snpsift.txt
+done
+for csv in {input[2]}; do
+    ln -sf "$PWD/$csv" pangolin/
+done
+make_variants_long_table.py \\
+    --bcftools_query_dir ./bcftools_query \\
+    --snpsift_dir ./snpsift \\
+    --pangolin_dir ./pangolin \\
+    --variant_caller ivar
+mv variants_long_table.csv {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/variants_long_table.yaml"
+
+# ---------------------------------------------------------------------------
+# 10. Assembly (upstream CUTADAPT -> PREPARE_PRIMER_FASTA -> FASTQC ->
+#     ASSEMBLY_SPADES subworkflow)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "assembly_fastq"
+input = ["fastp/{sample}_1.fastp.fastq.gz", "fastp/{sample}_2.fastp.fastq.gz"]
+output = [
+    "kraken2/{sample}.unclassified_1.fastq.gz",
+    "kraken2/{sample}.unclassified_2.fastq.gz",
+]
+description = "Pass trimmed reads through to the assembly branch when Kraken2 host filtering is off (upstream channel wiring: ch_assembly_fastq = ch_variants_fastq)"
+when = "config.skip_kraken2 || !config.kraken2_assembly_host_filter"
+shell = """
+cp {input[0]} {output[0]}
+cp {input[1]} {output[1]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "prepare_primer_fasta"
+input = ["reference/primers.fa"]
+output = ["assembly/cutadapt/adapters.sub.fa"]
+description = "Prepend X to primer sequences for Cutadapt (upstream PREPARE_PRIMER_FASTA)"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_noninternal_primers"
+shell = """
+mkdir -p assembly/cutadapt
+sed -r '/^[ACTGactg]+$/ s/^/X/g' {input[0]} > {output[0]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "cutadapt"
+input = [
+    "kraken2/{sample}.unclassified_1.fastq.gz",
+    "kraken2/{sample}.unclassified_2.fastq.gz",
+    "assembly/cutadapt/adapters.sub.fa",
+]
+output = [
+    "assembly/cutadapt/{sample}_1.trim.fastq.gz",
+    "assembly/cutadapt/{sample}_2.trim.fastq.gz",
+    "assembly/cutadapt/log/{sample}.primer_trim.cutadapt.log",
+]
+description = "Trim primer sequences with Cutadapt (upstream CUTADAPT)"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt"
+shell = """
+mkdir -p assembly/cutadapt assembly/cutadapt/log
+cutadapt \\
+    -Z \\
+    --cores {threads} \\
+    --overlap 5 --minimum-length 30 --error-rate 0.1 \\
+    -g file:{input[2]} -G file:{input[2]} \\
+    -o {output[0]} -p {output[1]} \\
+    {input[0]} {input[1]} \\
+    > {output[2]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/cutadapt.yaml"
+
+[[rules]]
+name = "fastqc_primers"
+input = ["assembly/cutadapt/{sample}_1.trim.fastq.gz", "assembly/cutadapt/{sample}_2.trim.fastq.gz"]
+output = [
+    "{config.out_dir}/assembly/cutadapt/fastqc/{sample}.primer_trim_1_fastqc.html",
+    "{config.out_dir}/assembly/cutadapt/fastqc/{sample}.primer_trim_2_fastqc.html",
+    "{config.out_dir}/assembly/cutadapt/fastqc/{sample}.primer_trim_1_fastqc.zip",
+    "{config.out_dir}/assembly/cutadapt/fastqc/{sample}.primer_trim_2_fastqc.zip",
+]
+description = "FastQC on the primer-trimmed reads (upstream FASTQC, assembly branch)"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_fastqc"
+shell = """
+mkdir -p {config.out_dir}/assembly/cutadapt/fastqc
+# Upstream runs FastQC with prefix <sample>.primer_trim (ext.prefix)
+ln -sf {input[0]} {sample}.primer_trim_1.fastq.gz
+ln -sf {input[1]} {sample}.primer_trim_2.fastq.gz
+fastqc \\
+    --quiet \\
+    --threads {threads} \\
+    --memory 6144 \\
+    {sample}.primer_trim_1.fastq.gz \\
+    {sample}.primer_trim_2.fastq.gz
+mv {sample}.primer_trim_1_fastqc.html {output[0]}
+mv {sample}.primer_trim_2_fastqc.html {output[1]}
+mv {sample}.primer_trim_1_fastqc.zip {output[2]}
+mv {sample}.primer_trim_2_fastqc.zip {output[3]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/fastqc.yaml"
+
+[[rules]]
+name = "assemble_spades"
+input = ["assembly/cutadapt/{sample}_1.trim.fastq.gz", "assembly/cutadapt/{sample}_2.trim.fastq.gz"]
+output = [
+    "assembly/spades/rnaviral/{sample}.scaffolds.fa.gz",
+    "assembly/spades/rnaviral/{sample}.contigs.fa.gz",
+    "assembly/spades/rnaviral/{sample}.assembly.gfa.gz",
+    "assembly/spades/rnaviral/{sample}.spades.log",
+]
+# Upstream defaults to assemblers='spades' (rnaviral mode). The unicycler and
+# minia assembler branches are excluded from this port (see README fidelity
+# table); spades is the only assembler available here. The upstream
+# SPADES ext.args '--${params.spades_mode}' is honored via config.spades_mode.
+description = "De novo assembly with SPAdes (upstream SPADES, --{config.spades_mode})"
+when = "!config.skip_assembly"
+shell = """
+mkdir -p assembly/spades/rnaviral
+# --memory 72 = upstream task.memory.toGiga() (process_high = 72GB)
+spades.py \\
+    --{config.spades_mode} \\
+    --threads {threads} \\
+    --memory 72 \\
+    -1 {input[0]} \\
+    -2 {input[1]} \\
+    -o ./
+mv spades.log {output[3]}
+if [ -f scaffolds.fasta ]; then
+    mv scaffolds.fasta {sample}.scaffolds.fa
+    gzip -n {sample}.scaffolds.fa
+    mv {sample}.scaffolds.fa.gz {output[0]}
+fi
+if [ -f contigs.fasta ]; then
+    mv contigs.fasta {sample}.contigs.fa
+    gzip -n {sample}.contigs.fa
+    mv {sample}.contigs.fa.gz {output[1]}
+fi
+if [ -f assembly_graph_with_scaffolds.gfa ]; then
+    mv assembly_graph_with_scaffolds.gfa {sample}.assembly.gfa
+    gzip -n {sample}.assembly.gfa
+    mv {sample}.assembly.gfa.gz {output[2]}
+fi
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/spades.yaml"
+
+[[rules]]
+name = "bandage"
+input = ["assembly/spades/rnaviral/{sample}.assembly.gfa.gz"]
+output = [
+    "assembly/spades/rnaviral/bandage/{sample}.png",
+    "assembly/spades/rnaviral/bandage/{sample}.svg",
+]
+description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in)"
+when = "!config.skip_assembly && !config.skip_bandage"
+shell = """
+mkdir -p assembly/spades/rnaviral/bandage
+# Bandage 0.9.0 reads graphs with plain QFile and detects GFA by first-line
+# content; a .gz input is binary and fails with 'Could not load graph'.
+# Upstream therefore runs GUNZIP_GFA before BANDAGE_IMAGE.
+gzip -cd {input[0]} > {sample}.assembly.gfa
+Bandage image {sample}.assembly.gfa {output[0]} --height 1000
+Bandage image {sample}.assembly.gfa {output[1]} --height 1000
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/bandage.yaml"
+
+[[rules]]
+name = "blast_assembly"
+input = [
+    "assembly/spades/rnaviral/{sample}.scaffolds.fa.gz",
+    "reference/blastdb/genome.fa.nin",
+    "reference/blastdb/genome.fa.nsq",
+    "reference/blastdb/genome.fa.nhr",
+    "scripts/blast_outfmt6_header.txt",
+    "scripts/blast_filtered_outfmt6_header.txt",
+]
+output = [
+    "assembly/spades/rnaviral/blastn/{sample}.results.blastn.txt",
+    "assembly/spades/rnaviral/blastn/{sample}.filter.blastn.txt",
+]
+description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN)"
+when = "!config.skip_assembly && !config.skip_blast"
+shell = """
+mkdir -p assembly/spades/rnaviral/blastn
+gzip -c -d {input[0]} > {sample}.scaffolds.fa
+DB=`find -L reference/blastdb -name "*.nin" | sed 's/\\.nin$//'`
+[ -z "$DB" ] && DB=`find -L reference/blastdb -name "*.nal" | sed 's/\\.nal$//'`
+echo Using $DB
+blastn \\
+    -num_threads {threads} \\
+    -db $DB \\
+    -query {sample}.scaffolds.fa \\
+    -outfmt '6 stitle staxids std slen qlen qcovs' \\
+    -out {sample}.blastn.txt
+cat {input[4]} {sample}.blastn.txt > {output[0]}
+awk 'BEGIN{OFS="\\t";FS="\\t"}{print $0,$6/$16,$6/$15}' {sample}.blastn.txt | awk 'BEGIN{OFS="\\t";FS="\\t"} $16 > {config.min_contig_length} && $18 > {config.min_perc_contig_aligned} && $1 !~ /phage/ {print $0}' > tmp.out
+cat {input[5]} tmp.out > {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/blast.yaml"
+
+[[rules]]
+name = "quast_assembly"
+input = ["assembly/spades/rnaviral/*.scaffolds.fa.gz", "reference/genome.fa", "reference/genome.gff"]
+output = [
+    "assembly/spades/rnaviral/quast.spades",
+    "assembly/spades/rnaviral/quast.spades.tsv",
+]
+description = "Assembly QC with QUAST (upstream QUAST, assembly branch)"
+when = "!config.skip_assembly && !config.skip_assembly_quast"
+depends_on = ["assemble_spades"]
+shell = """
+mkdir -p quast_inputs
+for f in {input[0]}; do
+    gzip -cd "$f" > "quast_inputs/$(basename "$f" .fa.gz).fa"
+done
+quast.py \\
+    --output-dir {output[0]} \\
+    -r {input[1]} \\
+    --features {input[2]} \\
+    --threads {threads} \\
+    quast_inputs/*.fa
+ln -s {output[0]}/report.tsv {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/quast.yaml"
+
+[[rules]]
+name = "abacas"
+input = ["assembly/spades/rnaviral/{sample}.scaffolds.fa.gz", "reference/genome.fa"]
+output = [
+    "assembly/spades/rnaviral/abacas/{sample}.abacas.bin",
+    "assembly/spades/rnaviral/abacas/{sample}.abacas.nucmer.delta",
+    "assembly/spades/rnaviral/abacas/{sample}.abacas.nucmer.filtered.delta",
+    "assembly/spades/rnaviral/abacas/{sample}.abacas.nucmer.tiling",
+    "assembly/spades/rnaviral/abacas/{sample}.abacas.unused.contigs.out",
+]
+description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS)"
+when = "!config.skip_assembly && !config.skip_abacas"
+shell = """
+mkdir -p assembly/spades/rnaviral/abacas
+gzip -cd {input[0]} > {sample}.scaffolds.fa
+abacas.pl \\
+    -r {input[1]} \\
+    -q {sample}.scaffolds.fa \\
+    -m -p nucmer \\
+    -o {sample}.abacas
+sort "{sample}.abacas.bin" > "{sample}.abacas.bin.tmp" && mv "{sample}.abacas.bin.tmp" "{sample}.abacas.bin"
+mv {sample}.abacas.bin {output[0]}
+mv nucmer.delta {output[1]}
+mv nucmer.filtered.delta {output[2]}
+mv nucmer.tiling {output[3]}
+mv unused_contigs.out {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/abacas.yaml"
+
+# ---------------------------------------------------------------------------
+# 11. MultiQC (upstream MULTIQC + multiqc_to_custom_csv.py)
+# ---------------------------------------------------------------------------
+
+[[rules]]
+name = "multiqc"
+input = []
+expand_inputs = [
+    { pattern = "{config.out_dir}/fastqc/raw/{sample}_1_fastqc.zip", variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/fastqc/raw/{sample}_2_fastqc.zip", variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/fastqc/trim/{sample}_1_fastqc.zip", variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/fastqc/trim/{sample}_2_fastqc.zip", variables = { sample = "config.samples_list" } },
+    { pattern = "fastp/{sample}.fastp.json", variables = { sample = "config.samples_list" } },
+    { pattern = "kraken2/{sample}.kraken2.report.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/log/{sample}.bowtie2.log", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.alignment_summary_metrics", variables = { sample = "config.samples_list" } },
+    # mosdepth inputs mirror upstream ch_multiqc_files: the genome global.dist.txt
+    # (distribution plots) plus the amplicon all_samples coverage tsv (heatmap).
+    # The genome summary.txt is kept in addition (feeds the MultiQC mosdepth
+    # General Stats table); the inert genome coverage.tsv and the amplicon
+    # per-sample summary.txt are deliberately not fed.
+    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.summary.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.global.dist.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/mosdepth/amplicon/all_samples.mosdepth.coverage.tsv", variables = {} },
+    { pattern = "variants/freyja/demix/{sample}.tsv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/freyja/bootstrap/{sample}.lineages.csv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/freyja/bootstrap/{sample}_summarized.csv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/{sample}.variant_counts_mqc.tsv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/{sample}.bcftools_stats.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/snpeff/bcftools_stats/{sample}.snpeff.bcftools_stats.txt", variables = { sample = "config.samples_list" } },
+    # snpeff -csvStats output; upstream mixes VARIANTS_IVAR.out.snpeff_csv into
+    # ch_multiqc_files so MultiQC renders the SnpEff section
+    { pattern = "variants/ivar/snpeff/{sample}.snpeff.csv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/consensus/bcftools/nextclade/{sample}.csv", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/ivar/consensus/bcftools/nextclade/nextclade_clade_mqc.tsv", variables = {} },
+    { pattern = "assembly/cutadapt/log/{sample}.primer_trim.cutadapt.log", variables = { sample = "config.samples_list" } },
+    { pattern = "assembly/spades/rnaviral/quast.spades", variables = {} },
+    { pattern = "variants/ivar/consensus/bcftools/quast.consensus", variables = {} },
+]
+output = [
+    "{config.out_dir}/multiqc/multiqc_report.html",
+    "{config.out_dir}/multiqc/multiqc_data",
+    "{config.out_dir}/multiqc/variants_metrics_mqc.csv",
+    "{config.out_dir}/multiqc/assembly_metrics_mqc.csv",
+]
+description = "Collate all reports with MultiQC (upstream MULTIQC + multiqc_to_custom_csv.py)"
+shell = """
+mkdir -p multiqc_work {config.out_dir}/multiqc
+for f in {input}; do
+    ln -sf "$PWD/$f" multiqc_work/
+done
+args=""
+[ -n "{config.multiqc_title}" ] && args="--title \\"{config.multiqc_title}\\""
+# First pass: parse tool logs and dump module YAMLs
+multiqc \\
+    --force \\
+    $args \\
+    --config scripts/multiqc_config_illumina.yml \\
+    multiqc_work/
+# Parse YAML files dumped by MultiQC to obtain metrics
+multiqc_to_custom_csv.py --platform illumina
+# Manually remove files that we don't want in the report
+if grep -q ">skip_assembly<" multiqc_report.html; then
+    rm -f *assembly_metrics_mqc.csv
+fi
+if grep -q ">skip_variants<" multiqc_report.html; then
+    rm -f *variants_metrics_mqc.csv
+fi
+if [ "{config.platform}" = "illumina" ]; then
+    rm -f variants/report.tsv
+fi
+# Second pass: final report (upstream ext.args2)
+multiqc \\
+    --force \\
+    -e general_stats \\
+    --ignore *nextclade_clade_mqc.tsv \\
+    $args \\
+    --config scripts/multiqc_config_illumina.yml \\
+    multiqc_work/
+mv multiqc_report.html {output[0]}
+rm -rf {output[1]}
+mv multiqc_data {output[1]}
+mv variants_metrics_mqc.csv {output[2]}
+mv assembly_metrics_mqc.csv {output[3]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/multiqc.yaml"

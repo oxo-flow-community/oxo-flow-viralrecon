@@ -1,0 +1,8 @@
+# Environment for FREYJA_VARIANTS, FREYJA_DEMIX and FREYJA_BOOT — pinned
+# exactly to the upstream nf-core/freyja modules.
+name: freyja
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::freyja=2.0.1

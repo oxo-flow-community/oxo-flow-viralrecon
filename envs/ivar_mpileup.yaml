@@ -1,0 +1,11 @@
+# Environment for IVAR_VARIANTS (samtools mpileup + ivar) — pinned exactly to
+# the upstream nf-core/ivar/variants module plus the samtools modules used for
+# the mpileup stage (htslib/samtools 1.22.1).
+name: ivar_mpileup
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::ivar=1.4.4
+  - bioconda::htslib=1.22.1
+  - bioconda::samtools=1.22.1

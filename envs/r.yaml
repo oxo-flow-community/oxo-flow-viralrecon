@@ -1,0 +1,17 @@
+# Environment for PLOT_MOSDEPTH_REGIONS and PLOT_BASE_DENSITY — pinned exactly
+# to the upstream local/plot_mosdepth_regions and local/plot_base_density modules
+# (r-base 4.2.0 vs 4.2 consolidated to 4.2.0, see README fidelity table).
+name: r
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - conda-forge::r-base=4.2.0
+  - conda-forge::r-reshape2=1.4.4
+  - conda-forge::r-optparse=1.7.5
+  - conda-forge::r-ggplot2=3.5.1
+  - conda-forge::r-scales=1.3.0
+  - conda-forge::r-viridis=0.6.5
+  - conda-forge::r-tidyverse=1.3.2
+  - bioconda::bioconductor-biostrings=2.66.0
+  - bioconda::bioconductor-complexheatmap=2.14

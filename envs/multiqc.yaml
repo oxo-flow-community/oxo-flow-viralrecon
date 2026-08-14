@@ -1,0 +1,8 @@
+# Environment for MULTIQC + multiqc_to_custom_csv.py — pinned exactly to the
+# upstream nf-core/multiqc module (pyyaml comes in as a multiqc dependency).
+name: multiqc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::multiqc=1.31

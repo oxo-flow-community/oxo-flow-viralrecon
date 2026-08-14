@@ -1,0 +1,11 @@
+# Environment for SNPEFF_BUILD, SNPEFF_ANN (+bgzip/tabix) and
+# SNPSIFT_EXTRACTFIELDS — pinned exactly to the upstream local/snpeff and
+# local/snpsift modules; htslib from the upstream nf-core/tabix modules.
+name: snpeff
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::snpeff=5.0
+  - bioconda::snpsift=4.3.1t
+  - bioconda::htslib=1.21

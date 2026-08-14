@@ -1,0 +1,7 @@
+# Environment for ABACAS — pinned exactly to the upstream nf-core/abacas module.
+name: abacas
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::abacas=1.3.1

@@ -1,0 +1,16 @@
+# Environment for coreutils-based rules (CAT_FASTQ, GUNZIP_*, UNTAR_KRAKEN2_DB,
+# ASSEMBLY_FASTQ passthrough, PREPARE_PRIMER_FASTA) — pinned exactly to the
+# upstream modules (nf-core/cat/fastq, gunzip, untar, local/prepare_primer_fasta).
+# The three sed-only local modules pin sed=4.9; the nf-core coreutils trio pins
+# sed=4.8; this merged env uses 4.8 (see README fidelity table).
+name: coreutils
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - conda-forge::coreutils=9.5
+  - conda-forge::grep=3.11
+  - conda-forge::gzip=1.13
+  - conda-forge::lbzip2=2.5
+  - conda-forge::sed=4.8
+  - conda-forge::tar=1.34

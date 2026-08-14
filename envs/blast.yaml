@@ -1,0 +1,10 @@
+# Environment for BLAST_MAKEBLASTDB and BLAST_BLASTN+FILTER_BLASTN — pinned
+# exactly to the upstream nf-core/blast modules; sed pinned to the upstream
+# local/filter_blastn module (sed=4.9).
+name: blast
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::blast=2.16.0
+  - conda-forge::sed=4.9

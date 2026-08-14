@@ -1,0 +1,7 @@
+# Environment for IVAR_TRIM — pinned exactly to the upstream nf-core/ivar/trim module.
+name: ivar
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::ivar=1.4.4

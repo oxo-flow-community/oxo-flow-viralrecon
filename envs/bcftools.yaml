@@ -1,0 +1,10 @@
+# Environment for BCFTOOLS_SORT+VCF_TABIX_STATS and BCFTOOLS_FILTER+TABIX —
+# pinned exactly to the upstream nf-core/bcftools modules (htslib 1.22.1; the
+# upstream tabix module pins htslib 1.21 — consolidated here, see README).
+name: bcftools
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::bcftools=1.22
+  - bioconda::htslib=1.22.1

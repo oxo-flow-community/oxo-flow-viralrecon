@@ -1,0 +1,8 @@
+# Environment for FASTQC_RAW, FASTQC_TRIM and FASTQC (assembly branch) —
+# pinned exactly to the upstream nf-core/fastqc module.
+name: fastqc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::fastqc=0.12.1

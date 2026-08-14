@@ -1,0 +1,11 @@
+# Environment for BOWTIE2_BUILD and BOWTIE2_ALIGN — pinned exactly to the
+# upstream nf-core/bowtie2 modules (align + build).
+name: bowtie2
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::bowtie2=2.5.4
+  - bioconda::htslib=1.21
+  - bioconda::samtools=1.21
+  - conda-forge::pigz=2.8

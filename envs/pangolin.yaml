@@ -1,0 +1,10 @@
+# Environment for PANGOLIN_RUN — pinned exactly to the upstream
+# nf-core/pangolin/run module.
+name: pangolin
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::pangolin=4.3.1
+  - bioconda::pangolin-data=1.32
+  - bioconda::snakemake=7.32.4

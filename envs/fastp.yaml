@@ -1,0 +1,7 @@
+# Environment for FASTP — pinned exactly to the upstream nf-core/fastp module.
+name: fastp
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::fastp=1.0.1

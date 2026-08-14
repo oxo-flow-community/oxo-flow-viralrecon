@@ -1,0 +1,8 @@
+# Environment for NEXTCLADE_DATASETGET and NEXTCLADE_RUN — pinned exactly to
+# the upstream nf-core/nextclade modules.
+name: nextclade
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::nextclade=3.11.0

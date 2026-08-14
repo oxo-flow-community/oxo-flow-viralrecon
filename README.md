@@ -1,0 +1,225 @@
+# oxo-flow-viralrecon
+
+oxo-flow port of [nf-core/viralrecon](https://github.com/nf-core/viralrecon) 3.0.0
+(commit `395079f1d24dce731ac22e03d7a5e71f110103fc`).
+
+Viral assembly and intrahost variant calling for Illumina amplicon data:
+FastQC → fastp → Kraken2 host removal → Bowtie2 alignment → iVar primer
+trimming → Picard metrics + mosdepth → Freyja lineage deconvolution →
+iVar variant calling → snpEff/SnpSift annotation → bcftools consensus →
+Pangolin/Nextclade/base-density QC → Cutadapt primer trimming → SPAdes
+assembly → Bandage/BLAST/QUAST/ABACAS → MultiQC.
+
+The default-parameters main execution path (illumina + amplicon) is ported
+faithfully: every process on that path has a rule here, every command mirrors
+the upstream nf-core module script under default params, and every
+`envs/*.yaml` carries the exact conda pins from the upstream module
+environment files. Anything not ported is listed in the
+[fidelity table](#fidelity-table) — nothing is silently dropped.
+
+## Quick start
+
+```bash
+# validate, lint and dry-run the default configuration
+./test/run.sh
+
+# or by hand:
+oxo-flow validate main.oxoflow
+oxo-flow dry-run main.oxoflow --samples first:1
+oxo-flow run main.oxoflow --samples first:1
+```
+
+The repo ships a tiny end-to-end fixture (2 samples, 200 reads each, a 6 kb
+SARS-CoV-2-like reference, and stub Kraken2/Pangolin/Freyja databases) so the
+workflow can be exercised without downloading anything. Point the `[config]`
+keys at your own data to use it for real (see below).
+
+## Inputs
+
+Upstream reads samples from a CSV samplesheet
+(`sample,fastq_1,fastq_2,platform,protocol`); oxo-flow discovers samples from
+the filesystem instead. Place paired-end FASTQ files at
+`<raw_dir>/<sample>_R1.fastq.gz` and `<raw_dir>/<sample>_R2.fastq.gz` and set
+`raw_dir` (default `test/fixtures/raw`, containing the fixture samples `S1`,
+`S2`). Samples are listed in `[[sample_groups]]`.
+
+Upstream can download its reference, primer scheme, Kraken2 database,
+Pangolin data and Freyja barcodes over the network (profiles/genomes.config
+URLs, `KRAKEN2_BUILD`, `PANGOLIN_UPDATEDATA`, `FREYJA_UPDATE`). The port has no
+network steps: all such inputs are files in the repository, with fixtures
+provided. Reference files must be uncompressed; set `fasta_ends_gz`,
+`gff_ends_gz` or `primer_bed_ends_gz` to `true` to run the equivalent of the
+upstream `GUNZIP_*` steps first.
+
+## Configuration
+
+Upstream `params.*` are `[config]` keys with identical defaults:
+
+| key | default | upstream param |
+| --- | --- | --- |
+| `fasta`, `gff`, `primer_bed` | `reference/genome.fa` etc. | `--fasta`, `--gff`, `--primer_bed` |
+| `kraken2_db` | `reference/kraken2_db.tar.gz` | `--kraken2_db` |
+| `kraken2_variants_host_filter` | `false` | `--kraken2_variants_host_filter` |
+| `kraken2_assembly_host_filter` | `true` | `--kraken2_assembly_host_filter` |
+| `nextclade_dataset_name` / `_tag` | `sars-cov-2` / `2024-10-17--16-48-48Z` | `--nextclade_dataset_name/_tag` (MN908947.3 genome config) |
+| `pango_database` | `test/fixtures/refs/pangolin_db` | `--pango_database` |
+| `freyja_barcodes` / `freyja_lineages` | fixture CSV files | `--freyja_barcodes` / `--freyja_lineages` |
+| `freyja_repeats` / `freyja_depthcutoff` | `100` / `0` | `--freyja_repeats` / `--freyja_depthcutoff` |
+| `raw_dir` / `out_dir` | `test/fixtures/raw` / `results` | samplesheet / `--outdir` |
+| `platform` / `protocol` | `illumina` / `amplicon` | `--platform` / `--protocol` |
+| `variant_caller` / `consensus_caller` | `ivar` / `bcftools` | `--variant_caller` / `--consensus_caller` |
+| `min_mapped_reads` | `1000` | `--min_mapped_reads` (see deviations) |
+| `min_contig_length` / `min_perc_contig_aligned` | `200` / `0.7` | `--min_contig_length` / `--min_perc_contig_aligned` |
+| `assemblers` / `spades_mode` | `spades` / `rnaviral` | `--assemblers` / `--spades_mode` |
+| `primer_left_suffix` / `primer_right_suffix` | `_LEFT` / `_RIGHT` | `--primer_left_suffix` / `--primer_right_suffix` |
+| `threeprime_adapters` | `false` | `--threeprime_adapters` |
+| all `skip_*` keys | upstream defaults | `--skip_fastqc` etc. (markdup/plasmidid `true`) |
+| `multiqc_title` | `""` | `--multiqc_title` |
+
+## Outputs
+
+Everything lands under `out_dir/results` (or the path given by `out_dir`),
+mirroring the upstream publishDir layout:
+
+```
+results/
+├── fastqc/{raw,trim}/                  FastQC reports (raw + fastp-trimmed)
+├── fastp/                              fastp JSON/HTML/log per sample
+├── kraken2/                            Kraken2 reports + host-filtered reads
+├── variants/bowtie2/                   BAMs, logs, picard_metrics, mosdepth/{genome,amplicon}
+├── variants/freyja/{variants,demix,bootstrap}/
+├── variants/ivar/                      variant TSV/VCF, snpeff/, bcftools_stats/
+├── variants/ivar/consensus/bcftools/   filtered VCF, consensus FASTA, quast.consensus,
+│                                       pangolin/, nextclade/, base_qc/
+├── variants/ivar/variants_long_table.csv
+├── assembly/cutadapt/                  primer-trimmed reads, adapters.sub.fa, fastqc/
+├── assembly/spades/rnaviral/           scaffolds/contigs/gfa (gzipped), bandage/,
+│                                       blastn/, quast.spades/, abacas/
+└── multiqc/                            multiqc_report.html, multiqc_data/,
+                                        variants_metrics_mqc.csv, assembly_metrics_mqc.csv
+```
+
+## Fidelity table
+
+Every upstream process and subworkflow on the default path, and what happened
+to it in this port:
+
+| Upstream process (module) | Port rule | Notes |
+| --- | --- | --- |
+| CAT_FASTQ | `cat_fastq` | `cat` to `fastp/{sample}_{1,2}.fastq.gz` |
+| FASTQC_RAW | `fastqc_raw` | same args; upstream input-rename step kept (reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC so output names match), then renamed into `results/fastqc/raw/` |
+| FASTP | `fastp` | `ext.args` baked in verbatim (cut_front/cut_tail/trim_poly_x/cut_mean_quality 30/...) + `--detect_adapter_for_pe`, `2>| >(tee log >&2)` |
+| FASTQC_TRIM | `fastqc_trim` | same args; upstream input-rename step kept (trimmed reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC), then renamed into `results/fastqc/trim/` |
+| KRAKEN2_KRAKEN2 | `kraken2` | `--db` (local), `--report-zero-counts`, pigz of classified/unclassified pairs; gated on `skip_kraken2` |
+| (channel wiring) | `assembly_fastq` | passthrough of fastp reads to `kraken2/{sample}.unclassified_*.fastq.gz` when host filtering is off — replaces upstream `ch_assembly_fastq = ch_variants_fastq`; see deviations |
+| BOWTIE2_ALIGN | `align_bowtie2` | index found by `find -L` on `*.rev.1.bt2[l]`, `--local --very-sensitive-local --seed 1`, unmapped-filtered `samtools view -F4`, log tee'd |
+| IVAR_TRIM | `ivar_trim` | `-m 30 -q 20 -e` (noprimer-gated), optional `-x offset`, log captured; gated amplicon |
+| BAM_SORT_STATS_SAMTOOLS | `bam_sort_index_trimmed` | merged: `samtools cat` (single input, dropped) → sort → index → stats/flagstat/idxstats |
+| (align branch) | `bam_sort_index` | same merged trio for the untrimmed BAM |
+| PICARD_MARKDUPLICATES | — | excluded: `skip_markduplicates=true` by default |
+| PICARD_COLLECTMULTIPLEMETRICS | `picard_metrics` | `-Xmx4800M` (= 6 GB task × 0.8), LENIENT, `--TMP_DIR tmp`, all 5 metric files + pdf |
+| MOSDEPTH_AMPLICON | `mosdepth_amplicon` | `--fast-mode --use-median --thresholds 0,1,10,50,100,500 --by collapsed.bed` |
+| MOSDEPTH_GENOME | `mosdepth_genome` | `--fast-mode --by 200` |
+| PLOT_MOSDEPTH_REGIONS (×2) | `plot_mosdepth_genome` / `plot_mosdepth_amplicon` | glob-gather over `*.regions.bed.gz`, `all_samples.mosdepth.*` outputs |
+| FREYJA_VARIANTS | `freyja_variants` | `--ref --variants --depths` |
+| FREYJA_DEMIX | `freyja_demix` | `--output --barcodes --meta`, `--depthcutoff` when non-zero |
+| FREYJA_BOOT | `freyja_boot` | `--nt --nb {freyja_repeats} --boxplot pdf`, boot outputs renamed to `{sample}.lineages.csv` / `{sample}_summarized.csv` |
+| IVAR_VARIANTS | `call_variants_ivar` | `samtools mpileup` (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0`) \| `ivar variants -t 0.25 -q 20 -m 10 -g -r -p` |
+| IVAR_VARIANTS_TO_VCF | `ivar_to_vcf` | `--ignore_strand_bias`, variant-counts log + header-cat MQC tsv |
+| BCFTOOLS_SORT | `sort_vcf` | `--output --temp-dir .` (default `--output-type z`); process_medium label (6c/36 GB/8 h) |
+| VCF_TABIX_STATS | `sort_vcf` | merged: tabix (`--threads -p vcf -f`) + `bcftools stats` |
+| SNPEFF_ANN | `snpeff_ann` | `-Xmx36g`, `-config/-dataDir` locals, `-csvStats`, summary html move |
+| VCF_BGZIP_TABIX_STATS | `snpeff_ann` | merged: bgzip + tabix + `bcftools stats` |
+| SNPSIFT_EXTRACTFIELDS | `snpsift_extract` | same ANN[*]/EFF[*] field list, `-s "," -e "."` |
+| BCFTOOLS_FILTER | `consensus_filter` | `--include 'FORMAT/ALT_FREQ >= 0.75'` |
+| TABIX_TABIX | `consensus_filter` | merged |
+| MAKE_BED_MASK | `consensus_call` | merged: mpileup `-a` + awk low-coverage (<10) positions + `make_bed_mask.py` |
+| BEDTOOLS_MERGE | `consensus_call` | merged |
+| BEDTOOLS_MASKFASTA | `consensus_call` | merged |
+| BCFTOOLS_CONSENSUS | `consensus_call` | `cat fasta \| bcftools consensus` |
+| RENAME_FASTA_HEADER | `consensus_call` | `sed "s/>/>{sample} /g"` (byte-identical to upstream) |
+| QUAST (consensus) | `quast_consensus` | `-r --features --threads`, report.tsv symlink; batch run over the whole cohort into one `quast.consensus/` dir — upstream runs one QUAST per sample (`ext.prefix` → per-sample dirs), so MultiQC shows one aggregated sample row here instead of per-sample rows (numeric results equivalent) |
+| PANGOLIN_RUN | `pangolin` | `XDG_CACHE_HOME=/tmp/.cache`, `--datadir --outfile --threads` |
+| NEXTCLADE_RUN | `nextclade` | `--jobs --input-dataset --output-all --output-basename` |
+| PLOT_BASE_DENSITY | `plot_base_density` | same script args, `base_qc/` outputs |
+| (channel code) | `nextclade_clade_mqc` | upstream builds `nextclade_clade_mqc.tsv` in Nextflow channel code (`getNextcladeFieldMapFromCsv` + `multiqcTsvFromList`); ported as an inline python gather over the per-sample CSVs |
+| BCFTOOLS_QUERY | `variants_long_table` | `-H -f '%CHROM\t%POS...'` per sample |
+| MAKE_VARIANTS_LONG_TABLE | `variants_long_table` | merged with query; symlink-collect pattern, `--variant_caller ivar` |
+| PREPARE_PRIMER_FASTA | `prepare_primer_fasta` | `sed -r '/^[ACTGactg]+$/ s/^/X/g'` |
+| CUTADAPT | `cutadapt` | `-Z --cores --overlap 5 --minimum-length 30 --error-rate 0.1 -g file: -G file:` |
+| FASTQC (assembly) | `fastqc_primers` | prefix `{sample}.primer_trim` via symlink rename |
+| SPADES | `assemble_spades` | `--{config.spades_mode} --memory 72` (upstream `ext.args`; default `rnaviral`), output renames (scaffolds/contigs/gfa gzipped, spades.log) |
+| BANDAGE_IMAGE | `bandage` | `--height 1000`, png + svg; upstream GUNZIP_GFA merged in (Bandage 0.9.0 cannot read `.gz` graphs — `gzip -cd` to `{sample}.assembly.gfa` first) |
+| BLAST_BLASTN | `blast_assembly` | `-outfmt '6 stitle staxids std slen qlen qcovs'`, DB `find -L *.nin`, header-cat |
+| FILTER_BLASTN | `blast_assembly` | merged: awk `$16 > min_contig_length && $18 > min_perc_contig_aligned && $1 !~ /phage/` + header-cat |
+| QUAST (assembly) | `quast_assembly` | gunzip of scaffolds in shell, `quast.spades/` dir + tsv symlink; batch run over the whole cohort into one `quast.spades/` dir — upstream runs one QUAST per sample (per-sample `S1.spades/` dirs), so MultiQC shows one aggregated sample row here instead of per-sample rows (numeric results equivalent) |
+| ABACAS | `abacas` | `-m -p nucmer`, sorted `.bin`, nucmer delta/filtered/tiling + unused contigs moves |
+| GUNZIP_FASTA/GFF/PRIMER_BED | `gunzip_fasta/gff/primer_bed` | gated on `*_ends_gz`; output to fixed `reference/` paths |
+| UNTAR_KRAKEN2_DB | `untar_kraken2_db` | upstream single-top-level-dir strip logic kept + upstream `ext.args2 --no-same-owner` on both tar invocations |
+| CUSTOM_GETCHROMSIZES | `prepare_genome` | `samtools faidx` + `cut -f 1,2` |
+| COLLAPSE_PRIMERS | `collapse_primers` | `--left_primer_suffix/--right_primer_suffix`; process_medium label (6c/36 GB/8 h) |
+| BEDTOOLS_GETFASTA | `get_primer_fasta` | `-s -nameOnly` |
+| BOWTIE2_BUILD | `build_bowtie2_index` | `--seed 1 --threads`; process_high label (12c/72 GB/16 h) |
+| NEXTCLADE_DATASETGET | `get_nextclade_dataset` | `--name sars-cov-2 --tag 2024-10-17--16-48-48Z` (v3pl tag of the MN908947.3 genome config); skips when a local `nextclade_dataset` path is set |
+| BLAST_MAKEBLASTDB | `make_blast_db` | `-parse_seqids -dbtype nucl` |
+| SNPEFF_BUILD | `build_snpeff_db` | `-Xmx12g`, `-gff3`, genomes/genome symlinks, `snpeff.config` echo |
+| MULTIQC | `multiqc` | both passes kept (parse pass + `-e general_stats --ignore *nextclade_clade_mqc.tsv` final pass), `grep -q ">skip_assembly<"` / `>skip_variants<` / `platform=illumina` rm rules, `multiqc_config_illumina.yml`; inputs mirror upstream `ch_multiqc_files` — snpeff `-csvStats` per-sample csv added (SnpEff section), mosdepth fed as genome `global.dist.txt` (distribution plots) + amplicon `all_samples.mosdepth.coverage.tsv` (heatmap), with the genome `summary.txt` additionally kept for the General Stats table (the inert genome coverage.tsv and amplicon per-sample summary.txt are not fed) |
+| multiqc_to_custom_csv.py | `multiqc` | merged, `--platform illumina` → `variants_metrics_mqc.csv` / `assembly_metrics_mqc.csv` |
+
+Excluded branches (not on the default path; see metadata.json for the full
+list): nanopore platform (ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/
+VCFLIB_VCFUNIQ), `variant_caller='bcftools'`, `consensus_caller='ivar'`,
+unicycler/minia assemblers, PICARD_MARKDUPLICATES, PLASMIDID, and the
+network-download processes KRAKEN2_BUILD / FREYJA_UPDATE / PANGOLIN_UPDATEDATA
+/ ADDITIONAL_ANNOTATION.
+
+## Documented deviations
+
+Everything below has no oxo-flow equivalent and is the closest faithful
+approximation; none silently change results:
+
+1. **Channel-level runtime filters are not ported.** The upstream
+   `process_trim_fastq` filter (drop samples with 0 reads after fastp), the
+   `min_mapped_reads` flagstat gate before variant calling, the
+   zero-variant-sample filter and optional-file existence gates run in
+   Nextflow channel code, not in a process. `min_mapped_reads` still exists as
+   config for documentation but has no effect. Rule shells run unconditioned
+   on their inputs.
+2. **Kraken2 host-filter routing.** When Kraken2 runs with
+   `kraken2_assembly_host_filter=false`, upstream routes the assembly branch
+   to the fastp reads (channel wiring) while Kraken2 still writes its
+   unclassified FASTQs. The port models this with the `assembly_fastq`
+   passthrough rule, which overwrites the `kraken2/` unclassified paths with
+   copies of the fastp reads (it runs after `kraken2` when both are active, so
+   the content is deterministic).
+3. **`nextclade_clade_mqc.tsv`** is built by inline python instead of Nextflow
+   channel code (same input CSVs, same output columns).
+4. **`min_contig_length` / `min_perc_contig_aligned`** are used directly in the
+   BLAST filter awk expression (upstream interpolates the same params).
+5. **Condensed environments.** Rules that merge several upstream processes
+   consolidate their conda envs. Exact pins are kept; only conflicts are
+   resolved: `sed` 4.8 (cat/fastq, gunzip, untar) vs 4.9 (prepare_primer_fasta,
+   filter_blastn, rename_fasta_header) → 4.8 in `coreutils.yaml`, 4.9 in
+   `blast.yaml`/`consensus.yaml`; make_bed_mask's samtools 1.14 → 1.22.1 in
+   `consensus.yaml`; tabix's htslib 1.21 → 1.22.1 in `bcftools.yaml`;
+   r-base 4.2 → 4.2.0 in `r.yaml`; mosdepth's build string
+   `=0.3.11=h0ec343a_1` → `=0.3.11` for cross-platform resolution.
+6. **MultiQC extras** (`multiqc_data/versions.yml`, `*_plots` directory) are
+   not emitted; the report HTML, data directory and the two metrics CSVs are.
+7. **QUAST/ABACAS/Bandage inputs** gated by upstream `file(...)` existence
+   checks (e.g. empty scaffolds) run unconditionally in the port; on the
+   fixture and real data the files always exist.
+
+## Resources
+
+Resource labels map 1:1 to upstream `withLabel` profiles: `process_single`
+(1c/6 GB/4 h), `process_low` (2c/12 GB/4 h), `process_medium`
+(6c/36 GB/8 h), `process_high` (12c/72 GB/16 h). Fastp/SPAdes memory and
+`-Xmx` JVM sizes are derived from the same values as upstream.
+
+## License
+
+This port is Apache-2.0 (see [LICENSE](LICENSE) and
+[NOTICE](NOTICE.md)). It is a port of nf-core/viralrecon, which is MIT
+licensed — the upstream license is preserved verbatim at
+[LICENSE.upstream](LICENSE.upstream).

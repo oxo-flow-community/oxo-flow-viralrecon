@@ -1,0 +1,7 @@
+# Environment for CUTADAPT — pinned exactly to the upstream nf-core/cutadapt module.
+name: cutadapt
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::cutadapt=5.0

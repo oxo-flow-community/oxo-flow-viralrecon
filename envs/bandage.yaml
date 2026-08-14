@@ -1,0 +1,8 @@
+# Environment for BANDAGE_IMAGE — pinned exactly to the upstream
+# nf-core/bandage/image module.
+name: bandage
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::bandage=0.9.0

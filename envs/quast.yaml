@@ -1,0 +1,8 @@
+# Environment for QUAST (consensus and assembly branches) — pinned exactly to
+# the upstream nf-core/quast module.
+name: quast
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::quast=5.3.0
