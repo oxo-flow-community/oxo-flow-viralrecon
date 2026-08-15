@@ -1,23 +1,78 @@
-# oxo-flow-viralrecon
+# oxo-flow-viralrecon — Viral assembly and intrahost variant calling for Illumina amplicon data
 
-oxo-flow port of [nf-core/viralrecon](https://github.com/nf-core/viralrecon) 3.0.0
-(commit `395079f1d24dce731ac22e03d7a5e71f110103fc`).
+> ★ Verified · ⇄ Official port of [`nf-core/viralrecon`](https://github.com/nf-core/viralrecon) @ `3.0.0` — same tools, same versions, same commands. Part of the [oxo-flow-community catalog](https://oxo-flow-community.github.io/).
 
-Viral assembly and intrahost variant calling for Illumina amplicon data:
-FastQC → fastp → Kraken2 host removal → Bowtie2 alignment → iVar primer
-trimming → Picard metrics + mosdepth → Freyja lineage deconvolution →
-iVar variant calling → snpEff/SnpSift annotation → bcftools consensus →
-Pangolin/Nextclade/base-density QC → Cutadapt primer trimming → SPAdes
-assembly → Bandage/BLAST/QUAST/ABACAS → MultiQC.
+[![CI](https://github.com/oxo-flow-community/oxo-flow-viralrecon/actions/workflows/ci.yml/badge.svg)](https://github.com/oxo-flow-community/oxo-flow-viralrecon/actions/workflows/ci.yml)
 
-The default-parameters main execution path (illumina + amplicon) is ported
-faithfully: every process on that path has a rule here, every command mirrors
-the upstream nf-core module script under default params, and every
-`envs/*.yaml` carries the exact conda pins from the upstream module
-environment files. Anything not ported is listed in the
-[fidelity table](#fidelity-table) — nothing is silently dropped.
+This workflow turns paired-end Illumina amplicon reads into a complete viral
+genomics report: read QC and trimming (FastQC, fastp), host-sequence removal
+(Kraken2), alignment to a user-provided reference genome (Bowtie2), primer
+trimming (iVar), intrahost variant calling and annotation (iVar → snpEff /
+SnpSift), consensus building with low-coverage masking (bcftools), lineage
+assignment and deconvolution (Pangolin, Nextclade, Freyja), de novo assembly
+with QC (Cutadapt → SPAdes → Bandage / BLAST / QUAST / ABACAS), and a single
+MultiQC report tying everything together. The repository ships a tiny
+end-to-end fixture (2 samples, 200 reads each, a 6 kb SARS-CoV-2-like
+reference, and stub Kraken2/Pangolin/Freyja databases) so the workflow can be
+exercised without downloading anything; point the `[config]` keys at your own
+data to use it for real.
 
-## Quick start
+## Installation
+
+### 1. Install oxo-flow
+
+Requires oxo-flow >= 0.11.0.
+
+Release binary (recommended):
+
+```bash
+curl -fL -o oxo-flow.tar.gz https://github.com/Traitome/oxo-flow/releases/download/v0.11.0/oxo-flow-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf oxo-flow.tar.gz && sudo mv oxo-flow /usr/local/bin/
+```
+
+Alternative via conda: `conda install -c bioconda oxo-flow-cli` (note: the
+conda package may lag behind releases; other platform binaries are on the
+[releases page](https://github.com/Traitome/oxo-flow/releases)).
+
+### 2. Get this workflow
+
+```bash
+git clone https://github.com/oxo-flow-community/oxo-flow-viralrecon.git
+cd oxo-flow-viralrecon
+```
+
+### 3. Requirements
+
+**(a) Reference data** — the workflow takes every reference as a local file;
+the files shipped in `reference/` are test fixtures, so replace them with real
+data before running:
+
+- reference genome FASTA (`config.fasta`, default `reference/genome.fa`) and
+  annotation GFF (`config.gff`, default `reference/genome.gff`) — uncompressed,
+  or set `fasta_ends_gz` / `gff_ends_gz` to run the gunzip steps first
+- primer scheme BED (`config.primer_bed`, default `reference/primers.bed`) for
+  the amplicon protocol
+- Kraken2 host-removal database as a tar.gz (`config.kraken2_db`, default
+  `reference/kraken2_db.tar.gz`)
+- Pangolin data directory (`config.pango_database`) and Freyja barcodes /
+  lineages CSVs (`config.freyja_barcodes` / `config.freyja_lineages`)
+- Nextclade dataset: downloaded automatically (`--name sars-cov-2 --tag
+  2024-10-17--16-48-48Z`), or set `config.nextclade_dataset` to a local dataset
+  directory to skip the download
+- paired-end Illumina FASTQs at `<raw_dir>/<sample>_R1.fastq.gz` and
+  `<raw_dir>/<sample>_R2.fastq.gz` (`config.raw_dir`)
+
+**(b) Compute** — resource labels map 1:1 to the upstream `withLabel` profiles
+(`process_single` 1c/6 GB, `process_low` 2c/12 GB, `process_medium` 6c/36 GB,
+`process_high` 12c/72 GB); the heaviest rules need up to **12 CPUs / 72 GB per
+rule**. The oxo-flow resource pool queues work rather than oversubscribing.
+
+**(c) Tool delivery** — conda environments with pinned versions
+(`envs/*.yaml`, conda-forge + bioconda channels, exact pins from the upstream
+module environment files). No containers. You need conda or mamba installed;
+rules create and reuse the pinned environments from `envs/`.
+
+## Usage
 
 ```bash
 # validate, lint and dry-run the default configuration
@@ -29,12 +84,7 @@ oxo-flow dry-run main.oxoflow --samples first:1
 oxo-flow run main.oxoflow --samples first:1
 ```
 
-The repo ships a tiny end-to-end fixture (2 samples, 200 reads each, a 6 kb
-SARS-CoV-2-like reference, and stub Kraken2/Pangolin/Freyja databases) so the
-workflow can be exercised without downloading anything. Point the `[config]`
-keys at your own data to use it for real (see below).
-
-## Inputs
+### Inputs
 
 Upstream reads samples from a CSV samplesheet
 (`sample,fastq_1,fastq_2,platform,protocol`); oxo-flow discovers samples from
@@ -51,7 +101,7 @@ provided. Reference files must be uncompressed; set `fasta_ends_gz`,
 `gff_ends_gz` or `primer_bed_ends_gz` to `true` to run the equivalent of the
 upstream `GUNZIP_*` steps first.
 
-## Configuration
+### Configuration
 
 Upstream `params.*` are `[config]` keys with identical defaults:
 
@@ -76,7 +126,7 @@ Upstream `params.*` are `[config]` keys with identical defaults:
 | all `skip_*` keys | upstream defaults | `--skip_fastqc` etc. (markdup/plasmidid `true`) |
 | `multiqc_title` | `""` | `--multiqc_title` |
 
-## Outputs
+### Outputs
 
 Everything lands under `out_dir/results` (or the path given by `out_dir`),
 mirroring the upstream publishDir layout:
@@ -99,7 +149,17 @@ results/
                                         variants_metrics_mqc.csv, assembly_metrics_mqc.csv
 ```
 
-## Fidelity table
+## Source
+
+- Upstream: [`nf-core/viralrecon`](https://github.com/nf-core/viralrecon) @
+  tag `3.0.0` (commit
+  `395079f1d24dce731ac22e03d7a5e71f110103fc`)
+- Upstream license: MIT (preserved verbatim at
+  [LICENSE.upstream](LICENSE.upstream))
+- Created 2026-08-15; this workflow may lag behind upstream releases.
+- Attribution details: [NOTICE.md](NOTICE.md)
+
+## Fidelity
 
 Every upstream process and subworkflow on the default path, and what happened
 to it in this port:
@@ -173,7 +233,7 @@ unicycler/minia assemblers, PICARD_MARKDUPLICATES, PLASMIDID, and the
 network-download processes KRAKEN2_BUILD / FREYJA_UPDATE / PANGOLIN_UPDATEDATA
 / ADDITIONAL_ANNOTATION.
 
-## Documented deviations
+### Documented deviations
 
 Everything below has no oxo-flow equivalent and is the closest faithful
 approximation; none silently change results:
@@ -210,16 +270,26 @@ approximation; none silently change results:
    checks (e.g. empty scaffolds) run unconditionally in the port; on the
    fixture and real data the files always exist.
 
-## Resources
+### Resources
 
 Resource labels map 1:1 to upstream `withLabel` profiles: `process_single`
 (1c/6 GB/4 h), `process_low` (2c/12 GB/4 h), `process_medium`
 (6c/36 GB/8 h), `process_high` (12c/72 GB/16 h). Fastp/SPAdes memory and
 `-Xmx` JVM sizes are derived from the same values as upstream.
 
+## Test
+
+```bash
+bash test/run.sh
+```
+
+Runs `oxo-flow validate` + `lint` + `dry-run` against the default
+configuration (the repo's fixture samples; nothing is downloaded or
+executed).
+
 ## License
 
-This port is Apache-2.0 (see [LICENSE](LICENSE) and
+This workflow is Apache-2.0 (see [LICENSE](LICENSE) and
 [NOTICE](NOTICE.md)). It is a port of nf-core/viralrecon, which is MIT
 licensed — the upstream license is preserved verbatim at
 [LICENSE.upstream](LICENSE.upstream).

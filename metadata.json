@@ -1,7 +1,9 @@
 {
   "name": "oxo-flow-viralrecon",
-  "title": "nf-core viralrecon (port)",
-  "engine": "oxo-flow",
+  "title": "Viral assembly and intrahost variant calling for Illumina amplicon data",
+  "origin": "port",
+  "rating": "verified",
+  "engine": "nextflow",
   "source": {
     "repo": "nf-core/viralrecon",
     "url": "https://github.com/nf-core/viralrecon",
@@ -12,7 +14,6 @@
   "created": "2026-08-15",
   "domain": "genomics",
   "tags": ["viral", "sars-cov-2", "amplicon", "variant-calling", "assembly", "nf-core", "illumina"],
-  "description": "oxo-flow port of the nf-core/viralrecon pipeline (default illumina + amplicon path): FastQC, fastp trimming, Kraken2 host removal, Bowtie2 alignment, iVar primer trimming and intrahost variant calling, snpEff/SnpSift annotation, bcftools consensus with low-coverage masking, Pangolin/Nextclade lineage assignment, Freyja lineage deconvolution, Cutadapt primer trimming and SPAdes de novo assembly with Bandage/BLAST/QUAST/ABACAS QC, and a final MultiQC report.",
   "scope": [
     "gunzip_fasta",
     "gunzip_gff",
@@ -83,13 +84,6 @@
     "MultiQC extras — the multiqc_data/versions.yml software table and *_plots directory are not emitted; the port keeps the report HTML, the data directory and the variants/assembly metrics CSVs"
   ],
   "rule_count": 51,
-  "notes": [
-    "fastqc_raw and fastqc_trim keep the upstream nf-core input-rename step: reads are symlinked to {sample}_{1,2}.fastq.gz before FastQC, so FastQC output names match the declared outputs (previously the raw/fastp basenames were passed and the mv steps failed at runtime)",
-    "bandage gunzips the SPAdes GFA in-shell before running Bandage 0.9.0 (upstream GUNZIP_GFA merged in; Bandage 0.9.0 reads plain QFile graphs and fails on .gz input)",
-    "multiqc inputs mirror upstream ch_multiqc_files: the snpeff -csvStats per-sample csv (SnpEff report section) and mosdepth genome {sample}.mosdepth.global.dist.txt (distribution plots) + amplicon all_samples.mosdepth.coverage.tsv (heatmap) are fed; the genome {sample}.mosdepth.summary.txt is additionally kept for the MultiQC mosdepth General Stats table, while the inert genome coverage.tsv and amplicon per-sample summary.txt are not fed",
-    "quast_consensus and quast_assembly batch the whole cohort into one output dir (quast.consensus/ quast.spades/); upstream runs one QUAST per sample with per-sample result dirs, so the MultiQC quast module shows one aggregated sample row per branch instead of per-sample rows (quast.py numeric results are equivalent)",
-    "collapse_primers, build_bowtie2_index and sort_vcf resources match the upstream withLabel profiles (process_medium/process_high)"
-  ],
   "tools": [
     "abacas",
     "bandage",
@@ -118,8 +112,22 @@
     "snpsift",
     "spades"
   ],
-  "status": "ready",
+  "description": "Turns paired-end Illumina amplicon reads into a complete viral genomics report: read QC and trimming (FastQC, fastp), host-sequence removal (Kraken2), alignment to a user-provided reference genome (Bowtie2), primer trimming, intrahost variant calling and annotation (iVar, snpEff/SnpSift), consensus building with low-coverage masking (bcftools), lineage assignment and deconvolution (Pangolin, Nextclade, Freyja), de novo assembly with QC (SPAdes, Bandage, BLAST, QUAST, ABACAS), and a single MultiQC report.",
+  "installation": {
+    "engine": "oxo-flow >= 0.11.0",
+    "toolchain": "conda envs — pinned versions (envs/*.yaml, conda-forge + bioconda channels; no containers)",
+    "requirements": [
+      "reference genome FASTA and annotation GFF (config.fasta / config.gff) — uncompressed by default, or set fasta_ends_gz / gff_ends_gz",
+      "primer scheme BED for the amplicon protocol (config.primer_bed)",
+      "Kraken2 host-removal database as a tar.gz (config.kraken2_db)",
+      "Pangolin data directory (config.pango_database) and Freyja barcodes/lineages CSVs (config.freyja_barcodes / config.freyja_lineages)",
+      "Nextclade dataset: downloaded automatically by default; set config.nextclade_dataset to a local dataset directory to skip the download",
+      "paired-end Illumina FASTQs at <raw_dir>/<sample>_R1.fastq.gz and _R2.fastq.gz (config.raw_dir)",
+      "compute: up to 12 CPUs / 72 GB per rule (resource pool queues rather than oversubscribes)",
+      "conda or mamba to build the pinned per-rule environments"
+    ]
+  },
   "repo_url": "https://github.com/oxo-flow-community/oxo-flow-viralrecon",
-  "site_page": "https://oxo-flow-community.github.io/oxo-flow-viralrecon/",
+  "license": "Apache-2.0",
   "upstream_license": "MIT"
 }
