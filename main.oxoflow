@@ -357,7 +357,7 @@ cd ../../
 mkdir -p reference/snpeff_db/genome/
 cd reference/snpeff_db/genome/
 ln -s ../../genome.gff genes.gff3
-cd ../../
+cd ../../../
 echo "genome.genome : genome" > reference/snpeff.config
 # -Xmx12g = upstream task.memory.giga (process_low = 12GB)
 snpEff \\
