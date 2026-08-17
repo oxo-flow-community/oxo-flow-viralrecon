@@ -358,7 +358,7 @@ echo "genome.genome : genome" > reference/snpeff.config
 # upstream SNPEFF_BUILD (config dir = cwd, no path doubling)
 cd reference
 snpEff \\
-    -Xmx12g \\
+    -Xmx{effective_memory_mb}m \\
     build \\
     -config snpeff.config \\
     -dataDir ./snpeff_db \\
@@ -1062,9 +1062,9 @@ when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'ampl
 depends_on = ["build_snpeff_db"]
 shell = """
 mkdir -p variants/ivar/snpeff/bcftools_stats
-# -Xmx36g = upstream task.memory.giga (process_medium = 36GB)
+# heap = machine-effective memory (upstream hardcodes task.memory.giga 36G)
 snpEff \\
-    -Xmx36g \\
+    -Xmx{effective_memory_mb}m \\
     genome \\
     -config $PWD/reference/snpeff.config \\
     -dataDir $PWD/reference/snpeff_db \\
@@ -1093,9 +1093,9 @@ output = ["variants/ivar/snpeff/{sample}.snpsift.txt"]
 description = "Extract annotation fields with SnpSift (upstream SNPSIFT_EXTRACTFIELDS)"
 when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'amplicon'"
 shell = """
-# -Xmx36g = upstream task.memory.giga (process_medium = 36GB)
+# heap = machine-effective memory (upstream hardcodes task.memory.giga 36G)
 SnpSift \\
-    -Xmx36g \\
+    -Xmx{effective_memory_mb}m \\
     extractFields \\
     -s "," \\
     -e "." \\
