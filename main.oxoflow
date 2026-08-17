@@ -588,7 +588,7 @@ bowtie2 \\
     --threads {threads} \\
     --local --very-sensitive-local --seed 1 \\
     2>| >(tee {output[1]} >&2) \\
-    | samtools view -F4 -bhS --threads {threads} -o {output[0]} -
+    | samtools view -F4 -bh --threads {threads} -o {output[0]} -
 """
 
 [rules.resources]
