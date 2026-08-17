@@ -250,7 +250,7 @@ memory = "36G"
 time_limit = "8h"
 
 [rules.environment]
-conda = "envs/python.yaml"
+conda = "envs/ivar.yaml"
 
 [[rules]]
 name = "get_primer_fasta"
