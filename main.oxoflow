@@ -237,7 +237,7 @@ output = ["reference/primers.collapsed.bed"]
 description = "Collapse primer pairs into amplicon intervals (upstream COLLAPSE_PRIMERS, process_medium label)"
 when = "config.protocol == 'amplicon' && !config.skip_variants && !config.skip_mosdepth"
 shell = """
-collapse_primer_bed.py \\
+python scripts/collapse_primer_bed.py \\
     --left_primer_suffix {config.primer_left_suffix} \\
     --right_primer_suffix {config.primer_right_suffix} \\
     {input[0]} \\
@@ -250,7 +250,7 @@ memory = "36G"
 time_limit = "8h"
 
 [rules.environment]
-conda = "envs/ivar.yaml"
+conda = "envs/python.yaml"
 
 [[rules]]
 name = "get_primer_fasta"
