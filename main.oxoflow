@@ -350,21 +350,18 @@ output = ["reference/snpeff_db", "reference/snpeff.config"]
 description = "Build the snpEff database from the reference (upstream SNPEFF_BUILD)"
 when = "!config.skip_variants && !config.skip_snpeff"
 shell = """
-mkdir -p reference/snpeff_db/genomes/
-cd reference/snpeff_db/genomes/
-ln -s ../../genome.fa genome.fa
-cd ../../
-mkdir -p reference/snpeff_db/genome/
-cd reference/snpeff_db/genome/
-ln -s ../../genome.gff genes.gff3
-cd ../../../
+mkdir -p reference/snpeff_db/genomes/ reference/snpeff_db/genome/
+ln -sf ../../genome.fa reference/snpeff_db/genomes/genome.fa
+ln -sf ../../genome.gff reference/snpeff_db/genome/genes.gff
 echo "genome.genome : genome" > reference/snpeff.config
-# -Xmx12g = upstream task.memory.giga (process_low = 12GB)
+# run from reference/ so -config/-dataDir resolve exactly like the
+# upstream SNPEFF_BUILD (config dir = cwd, no path doubling)
+cd reference
 snpEff \\
     -Xmx12g \\
     build \\
-    -config reference/snpeff.config \\
-    -dataDir ./reference/snpeff_db \\
+    -config snpeff.config \\
+    -dataDir ./snpeff_db \\
     -gff3 \\
     -v \\
     genome
@@ -1069,8 +1066,8 @@ mkdir -p variants/ivar/snpeff/bcftools_stats
 snpEff \\
     -Xmx36g \\
     genome \\
-    -config reference/snpeff.config \\
-    -dataDir reference/snpeff_db \\
+    -config $PWD/reference/snpeff.config \\
+    -dataDir $PWD/reference/snpeff_db \\
     {input[0]} \\
     -csvStats {output[2]} \\
     > variants/ivar/snpeff/{sample}.snpeff.vcf
