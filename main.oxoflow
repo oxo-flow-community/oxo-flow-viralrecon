@@ -742,8 +742,11 @@ conda = "envs/picard.yaml"
 name = "mosdepth_genome"
 input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam"]
 output = [
-    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.summary.txt",
-    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.global.dist.txt",
+    # mosdepth appends its own ".mosdepth." segment to the prefix
+    # (live: the port declared {sample}.mosdepth.summary.txt but the
+    # tool wrote {sample}.mosdepth.mosdepth.summary.txt)
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.summary.txt",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.global.dist.txt",
     "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.per-base.bed.gz",
     "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.regions.bed.gz",
 ]
@@ -801,8 +804,9 @@ conda = "envs/r.yaml"
 name = "mosdepth_amplicon"
 input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/primers.collapsed.bed"]
 output = [
-    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.summary.txt",
-    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.global.dist.txt",
+    # same mosdepth ".mosdepth." naming as mosdepth_genome
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.mosdepth.summary.txt",
+    "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.mosdepth.global.dist.txt",
     "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.per-base.bed.gz",
     "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.regions.bed.gz",
 ]
@@ -1731,8 +1735,8 @@ expand_inputs = [
     # The genome summary.txt is kept in addition (feeds the MultiQC mosdepth
     # General Stats table); the inert genome coverage.tsv and the amplicon
     # per-sample summary.txt are deliberately not fed.
-    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.summary.txt", variables = { sample = "config.samples_list" } },
-    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.global.dist.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.summary.txt", variables = { sample = "config.samples_list" } },
+    { pattern = "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.global.dist.txt", variables = { sample = "config.samples_list" } },
     { pattern = "variants/bowtie2/mosdepth/amplicon/all_samples.mosdepth.coverage.tsv", variables = {} },
     { pattern = "variants/freyja/demix/{sample}.tsv", variables = { sample = "config.samples_list" } },
     { pattern = "variants/freyja/bootstrap/{sample}.lineages.csv", variables = { sample = "config.samples_list" } },
