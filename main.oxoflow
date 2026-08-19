@@ -1520,30 +1520,41 @@ description = "De novo assembly with SPAdes (upstream SPADES, --{config.spades_m
 when = "!config.skip_assembly"
 shell = """
 mkdir -p assembly/spades/rnaviral
-# --memory 72 = upstream task.memory.toGiga() (process_high = 72GB)
+# --memory follows the machine's effective budget (live: 72 GB hardcoded
+# is an OOM death sentence below that; the clamp cannot rescue a flag)
 spades.py \\
     --{config.spades_mode} \\
     --threads {threads} \\
-    --memory 72 \\
+    --memory $(( {effective_memory_mb} / 1024 )) \\
     -1 {input[0]} \\
     -2 {input[1]} \\
     -o ./
-mv spades.log {output[3]}
+# fail fast instead of silently exiting 0 on missing outputs (live:
+# spades wrote nothing and the unguarded mv died) and emit the empty
+# artifacts when the assembly is genuinely zero-contig
+[ $? -eq 0 ] || { echo "spades.py failed for {sample}" 1>&2; exit 1; }
+[ -f spades.log ] && mv spades.log {output[3]} || : > {output[3]}
 if [ -f scaffolds.fasta ]; then
     mv scaffolds.fasta {sample}.scaffolds.fa
-    gzip -n {sample}.scaffolds.fa
-    mv {sample}.scaffolds.fa.gz {output[0]}
+else
+    : > {sample}.scaffolds.fa
 fi
+gzip -n {sample}.scaffolds.fa
+mv {sample}.scaffolds.fa.gz {output[0]}
 if [ -f contigs.fasta ]; then
     mv contigs.fasta {sample}.contigs.fa
-    gzip -n {sample}.contigs.fa
-    mv {sample}.contigs.fa.gz {output[1]}
+else
+    : > {sample}.contigs.fa
 fi
+gzip -n {sample}.contigs.fa
+mv {sample}.contigs.fa.gz {output[1]}
 if [ -f assembly_graph_with_scaffolds.gfa ]; then
     mv assembly_graph_with_scaffolds.gfa {sample}.assembly.gfa
-    gzip -n {sample}.assembly.gfa
-    mv {sample}.assembly.gfa.gz {output[2]}
+else
+    : > {sample}.assembly.gfa
 fi
+gzip -n {sample}.assembly.gfa
+mv {sample}.assembly.gfa.gz {output[2]}
 """
 
 [rules.resources]
