@@ -1100,10 +1100,18 @@ output = [
 description = "Sort, index and collect stats for the called VCF (upstream BCFTOOLS_SORT + VCF_TABIX_STATS, process_medium label)"
 when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
-bcftools sort \\
-    --output {output[0]} \\
-    --temp-dir . \\
-    {input[0]}
+# zero-record VCFs: bcftools sort strips every header field no record
+# uses, and the downstream consensus filter needs FORMAT/ALT_FREQ
+# (live: 'the tag ALT_FREQ is not defined in the VCF header'). Pass
+# empty VCFs through verbatim so the full header survives.
+if [ "$(grep -vc "^#" {input[0]})" -eq 0 ]; then
+    bgzip -c {input[0]} > {output[0]}
+else
+    bcftools sort \\
+        --output {output[0]} \\
+        --temp-dir . \\
+        {input[0]}
+fi
 tabix --threads {threads} -p vcf -f {output[0]}
 bcftools stats {output[0]} > {output[2]}
 """
