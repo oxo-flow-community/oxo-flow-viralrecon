@@ -80,7 +80,12 @@ def make_reads(template, n_pairs, rng):
 def make_sample(sample, genome, host, rng):
     n_host = int(PAIRS_PER_SAMPLE * HOST_FRACTION)
     n_viral = PAIRS_PER_SAMPLE - n_host
-    pairs = make_reads(host, n_host, rng) + make_reads(genome, n_viral, rng)
+    h1, h2 = make_reads(host, n_host, rng)
+    v1, v2 = make_reads(genome, n_viral, rng)
+    # make_reads returns (r1s, r2s) — a TUPLE, and `+` concatenates
+    # tuples (live: pairs ended up with 4 elements and the samples
+    # shipped 4 reads)
+    pairs = list(zip(h1 + v1, h2 + v2))
     r1 = [f"@{sample}_{i}/1\n{p[0]}\n+\n{qualities(READ_LEN, rng)}" for i, p in enumerate(pairs)]
     r2 = [f"@{sample}_{i}/2\n{p[1]}\n+\n{qualities(READ_LEN, rng)}" for i, p in enumerate(pairs)]
     # shuffle so host/viral reads interleave like a real sample
