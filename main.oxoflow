@@ -62,7 +62,10 @@ pango_database = "test/fixtures/refs/pangolin_db"
 # --- Freyja (upstream --freyja_barcodes / --freyja_lineages. FREYJA_UPDATE,
 #     the network download, is not ported.) ---
 freyja_barcodes = "test/fixtures/refs/freyja_barcodes.csv"
-freyja_lineages = "test/fixtures/refs/freyja_lineages.csv"
+# freyja's meta format is the curated_lineages JSON (buildLineageMap
+# json.loads it — live: the CSV default died in freyja boot with
+# JSONDecodeError); the CSV sibling is kept as the barcodes-side table
+freyja_lineages = "test/fixtures/refs/freyja_lineages.json"
 freyja_repeats = 100
 freyja_depthcutoff = 0
 # --- Input reads (upstream samplesheet) ---

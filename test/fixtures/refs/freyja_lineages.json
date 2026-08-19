@@ -1,0 +1,5 @@
+[
+  {"name": "B.1.1.7", "pango_descendants": ["B.1.1.7"], "who_name": "Alpha", "unixTime": 1609459200, "aaSubstitutions": [], "nucMutations": ["S:69-70del"]},
+  {"name": "B.1.617.2", "pango_descendants": ["B.1.617.2"], "who_name": "Delta", "unixTime": 1622505600, "aaSubstitutions": [], "nucMutations": ["L452R"]},
+  {"name": "BA.1", "pango_descendants": ["BA.1"], "who_name": "Omicron", "unixTime": 1638316800, "aaSubstitutions": [], "nucMutations": ["S:N501Y"]}
+]
