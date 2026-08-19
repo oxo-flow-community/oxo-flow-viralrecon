@@ -786,7 +786,7 @@ description = "Coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS
 when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
 depends_on = ["mosdepth_genome"]
 shell = """
-plot_mosdepth_regions.r \\
+Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
     --output_dir ./ \\
     --output_suffix mosdepth \\
@@ -847,7 +847,7 @@ description = "Amplicon coverage plots across all samples (upstream PLOT_MOSDEPT
 when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
 depends_on = ["mosdepth_amplicon"]
 shell = """
-plot_mosdepth_regions.r \\
+Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
     --output_dir ./ \\
     --output_suffix mosdepth \\
@@ -1015,7 +1015,7 @@ output = [
 description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
 when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
-ivar_variants_to_vcf.py \\
+python scripts/ivar_variants_to_vcf.py \\
     {input[0]} \\
     {output[0]} \\
     --fasta {input[1]} \\
@@ -1181,7 +1181,7 @@ samtools \\
     --reference {input[2]} \\
     {input[0]} \\
     | awk -v OFS='\\t' '{print $1, $2-1, $2, $4}' | awk '$4 < 10' > lowcov_positions.txt
-make_bed_mask.py \\
+python scripts/make_bed_mask.py \\
     {input[1]} \\
     lowcov_positions.txt \\
     {sample}.coverage.masked.bed
@@ -1309,7 +1309,7 @@ description = "Plot consensus base density (upstream PLOT_BASE_DENSITY)"
 when = "!config.skip_consensus && !config.skip_consensus_plots && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/base_qc
-plot_base_density.r \\
+Rscript scripts/plot_base_density.r \\
     --fasta_files {input[0]} \\
     --prefixes {sample}.consensus \\
     --output_dir variants/ivar/consensus/bcftools/base_qc/
@@ -1384,7 +1384,7 @@ done
 for csv in {input[2]}; do
     ln -sf "$PWD/$csv" pangolin/
 done
-make_variants_long_table.py \\
+python scripts/make_variants_long_table.py \\
     --bcftools_query_dir ./bcftools_query \\
     --snpsift_dir ./snpsift \\
     --pangolin_dir ./pangolin \\
