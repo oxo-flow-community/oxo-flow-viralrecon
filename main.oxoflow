@@ -543,7 +543,10 @@ kraken2 \\
     --report-zero-counts \\
     {input[0]} \\
     {input[1]}
-pigz -p {threads} {sample}.classified#.fastq {sample}.unclassified#.fastq
+# kraken2 substitutes the # itself when writing; the shell cannot
+# (live: pigz got the literal-name and skipped everything, then the
+# mv died — kraken2 had written classified_1/2 and unclassified_1/2)
+pigz -p {threads} {sample}.classified_1.fastq {sample}.classified_2.fastq {sample}.unclassified_1.fastq {sample}.unclassified_2.fastq
 mv {sample}.unclassified_1.fastq.gz {output[1]}
 mv {sample}.unclassified_2.fastq.gz {output[2]}
 """
