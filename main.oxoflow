@@ -1226,9 +1226,11 @@ quast.py \\
     --features {input[2]} \\
     --threads {threads} \\
     {input[0]}
-# -f: a previous run's symlink survives resumption (live: plain ln -s
-# died with 'File exists')
-ln -sf {output[0]}/report.tsv {output[1]}
+# a real copy, not a symlink: the engine's output validation does not
+# accept symlinked outputs (live: the valid symlink still failed
+# validation), and -f guards the resumption residue
+rm -f {output[1]}
+cp {output[0]}/report.tsv {output[1]}
 """
 
 [rules.resources]
@@ -1667,9 +1669,11 @@ quast.py \\
     --features {input[2]} \\
     --threads {threads} \\
     quast_inputs/*.fa
-# -f: a previous run's symlink survives resumption (live: plain ln -s
-# died with 'File exists')
-ln -sf {output[0]}/report.tsv {output[1]}
+# a real copy, not a symlink: the engine's output validation does not
+# accept symlinked outputs (live: the valid symlink still failed
+# validation), and -f guards the resumption residue
+rm -f {output[1]}
+cp {output[0]}/report.tsv {output[1]}
 """
 
 [rules.resources]
