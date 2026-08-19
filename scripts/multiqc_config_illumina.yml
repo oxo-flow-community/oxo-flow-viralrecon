@@ -11,7 +11,9 @@ run_modules:
   - custom_content
   - fastqc
   - fastp
-  - kraken
+  # kraken EXCLUDED (upstream feeds it via custom_content): the kraken
+  # module crashes on the minimal single-taxon report (live: KeyError
+  # 'root' in sample_cnt_by_taxon_by_rank)
   - bowtie2
   - samtools
   - mosdepth
@@ -29,9 +31,6 @@ module_order:
   - fastp:
       name: "PREPROCESS: fastp (adapter trimming)"
       info: "This section of the report shows fastp results for reads after adapter and quality trimming."
-  - kraken:
-      name: "PREPROCESS: Kraken 2"
-      info: "This section of the report shows Kraken 2 classification results for reads after adapter trimming with fastp."
   - bowtie2:
       name: "VARIANTS: Bowtie 2"
       info: "This section of the report shows Bowtie 2 mapping results for reads after adapter trimming and quality trimming."
