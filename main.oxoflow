@@ -714,7 +714,9 @@ output = [
     "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.insert_size_metrics",
     "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_by_cycle_metrics",
     "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_distribution_metrics",
-    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.pdf",
+    # the aggregate PDF is NOT declared: picard skips it when any
+    # sub-metric fails on tiny data (live: the per-chart PDFs landed
+    # but CollectMultipleMetrics.pdf did not)
 ]
 description = "Collect alignment metrics with Picard (upstream PICARD_COLLECTMULTIPLEMETRICS)"
 when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'amplicon'"
