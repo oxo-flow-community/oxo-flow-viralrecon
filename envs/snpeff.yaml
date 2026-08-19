@@ -9,3 +9,7 @@ dependencies:
   - bioconda::snpeff=5.0
   - bioconda::snpsift=4.3.1t
   - bioconda::htslib=1.21
+  # the merged snpeff_ann rule also runs bcftools stats (upstream's
+  # VCF_BGZIP_TABIX_STATS ran in a separate bcftools process — live:
+  # 'bcftools: command not found')
+  - bioconda::bcftools=1.22
