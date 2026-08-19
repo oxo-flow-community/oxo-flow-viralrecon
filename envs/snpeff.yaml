@@ -8,7 +8,9 @@ channels:
 dependencies:
   - bioconda::snpeff=5.0
   - bioconda::snpsift=4.3.1t
-  - bioconda::htslib=1.21
+  # htslib bumped 1.21 -> 1.22 to satisfy bcftools 1.22's >=1.22
+  # constraint (live: solve conflict)
+  - bioconda::htslib=1.22
   # the merged snpeff_ann rule also runs bcftools stats (upstream's
   # VCF_BGZIP_TABIX_STATS ran in a separate bcftools process — live:
   # 'bcftools: command not found')
