@@ -1838,8 +1838,11 @@ expand_inputs = [
 output = [
     "{config.out_dir}/multiqc/multiqc_report.html",
     "{config.out_dir}/multiqc/multiqc_data",
-    "{config.out_dir}/multiqc/variants_metrics_mqc.csv",
-    "{config.out_dir}/multiqc/assembly_metrics_mqc.csv",
+    # the bundled script defaults --out_prefix to "summary"
+    # (live: the csvs landed as summary_* and the declared
+    # prefix-less names never appeared)
+    "{config.out_dir}/multiqc/summary_variants_metrics_mqc.csv",
+    "{config.out_dir}/multiqc/summary_assembly_metrics_mqc.csv",
 ]
 description = "Collate all reports with MultiQC (upstream MULTIQC + multiqc_to_custom_csv.py)"
 shell = """
@@ -1878,8 +1881,8 @@ multiqc \\
 mv multiqc_report.html {output[0]}
 rm -rf {output[1]}
 mv multiqc_data {output[1]}
-mv variants_metrics_mqc.csv {output[2]}
-mv assembly_metrics_mqc.csv {output[3]}
+mv summary_variants_metrics_mqc.csv {output[2]}
+mv summary_assembly_metrics_mqc.csv {output[3]}
 """
 
 [rules.resources]
