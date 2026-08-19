@@ -1015,7 +1015,9 @@ output = [
 description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
 when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
-if [ -s {input[0]} ]; then
+# -s is not enough: a header-only tsv is nonzero-size but has zero
+# variant rows and the upstream script still dies (live)
+if [ "$(wc -l < {input[0]})" -gt 1 ]; then
     python scripts/ivar_variants_to_vcf.py \\
         {input[0]} \\
         {output[0]} \\
