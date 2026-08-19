@@ -946,20 +946,31 @@ description = "Bootstrap the lineage assignment with Freyja (upstream FREYJA_BOO
 when = "!config.skip_variants && !config.skip_freyja && !config.skip_freyja_boot && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/freyja/bootstrap
-args="--boxplot pdf"
-[ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff} --boxplot pdf"
-freyja \\
-    boot \\
-    $args \\
-    --nt {threads} \\
-    --nb {config.freyja_repeats} \\
-    --output_base variants/freyja/bootstrap/{sample}.boot \\
-    --barcodes {input[2]} \\
-    --meta {input[3]} \\
-    {input[0]} \\
-    {input[1]}
-mv variants/freyja/bootstrap/{sample}.boot.lineages.csv {output[0]}
-mv variants/freyja/bootstrap/{sample}.boot_summarized.csv {output[1]}
+# zero-variant samples: freyja boot degenerates on an empty mutation
+# set (live: IndexError inside build_mix_and_depth_arrays — upstream
+# drops such samples via the zero-variant-sample filter, the
+# documented runtime-filter deviation). Emit the empty channel.
+n_pass=$(awk -F"\\t" 'NR > 1 && $13 == "TRUE" {n++} END {print n+0}' {input[0]})
+if [ "$n_pass" -eq 0 ]; then
+    echo "0 PASSing variants — emitting the empty freyja boot channel" 1>&2
+    echo "lineage,abundance" > {output[0]}
+    echo "lineage,abundance" > {output[1]}
+else
+    args="--boxplot pdf"
+    [ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff} --boxplot pdf"
+    freyja \\
+        boot \\
+        $args \\
+        --nt {threads} \\
+        --nb {config.freyja_repeats} \\
+        --output_base variants/freyja/bootstrap/{sample}.boot \\
+        --barcodes {input[2]} \\
+        --meta {input[3]} \\
+        {input[0]} \\
+        {input[1]}
+    mv variants/freyja/bootstrap/{sample}.boot.lineages.csv {output[0]}
+    mv variants/freyja/bootstrap/{sample}.boot_summarized.csv {output[1]}
+fi
 """
 
 [rules.resources]
