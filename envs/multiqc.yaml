@@ -6,3 +6,6 @@ channels:
   - bioconda
 dependencies:
   - bioconda::multiqc=1.31
+  # multiqc_to_custom_csv.py imports yaml directly; multiqc 1.31 does
+  # not pin pyyaml on this platform (live: ModuleNotFoundError)
+  - conda-forge::pyyaml=6.0.2
