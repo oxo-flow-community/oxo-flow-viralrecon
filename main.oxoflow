@@ -1226,7 +1226,9 @@ quast.py \\
     --features {input[2]} \\
     --threads {threads} \\
     {input[0]}
-ln -s {output[0]}/report.tsv {output[1]}
+# -f: a previous run's symlink survives resumption (live: plain ln -s
+# died with 'File exists')
+ln -sf {output[0]}/report.tsv {output[1]}
 """
 
 [rules.resources]
@@ -1665,7 +1667,9 @@ quast.py \\
     --features {input[2]} \\
     --threads {threads} \\
     quast_inputs/*.fa
-ln -s {output[0]}/report.tsv {output[1]}
+# -f: a previous run's symlink survives resumption (live: plain ln -s
+# died with 'File exists')
+ln -sf {output[0]}/report.tsv {output[1]}
 """
 
 [rules.resources]
