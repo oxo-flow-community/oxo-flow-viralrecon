@@ -1015,12 +1015,22 @@ output = [
 description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
 when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
-python scripts/ivar_variants_to_vcf.py \\
-    {input[0]} \\
-    {output[0]} \\
-    --fasta {input[1]} \\
-    --ignore_strand_bias \\
-    > {output[1]}
+if [ -s {input[0]} ]; then
+    python scripts/ivar_variants_to_vcf.py \\
+        {input[0]} \\
+        {output[0]} \\
+        --fasta {input[1]} \\
+        --ignore_strand_bias \\
+        > {output[1]}
+else
+    # zero-variant sample: upstream drops these from the channel (the
+    # documented runtime-filter deviation); the port emits a valid
+    # empty VCF instead (live: the exact-reference fixture calls no
+    # variants and the upstream script dies on the empty tsv)
+    echo "##fileformat=VCFv4.2" > {output[0]}
+    printf "#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\n" >> {output[0]}
+    echo "0 variants (empty iVar tsv)" > {output[1]}
+fi
 cat {input[2]} {output[1]} > {output[2]}
 """
 
