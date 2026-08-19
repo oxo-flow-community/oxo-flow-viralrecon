@@ -1058,7 +1058,23 @@ else
     # documented runtime-filter deviation); the port emits a valid
     # empty VCF instead (live: the exact-reference fixture calls no
     # variants and the upstream script dies on the empty tsv)
+    # carry the ivar VCF header block so downstream bcftools filters
+    # (--include FORMAT/ALT_FREQ) parse the empty VCF (live:
+    # consensus_filter died on 'the tag ALT_FREQ is not defined')
     echo "##fileformat=VCFv4.2" > {output[0]}
+    echo "##source=iVar" >> {output[0]}
+    echo "##contig=<ID=NC_045512.2>" >> {output[0]}
+    echo '##INFO=<ID=TYPE,Number=1,Type=String,Description="Either SNP (Single Nucleotide Polymorphism), DEL (deletion) or INS (Insertion)">' >> {output[0]}
+    echo '##FILTER=<ID=PASS,Description="All filters passed">' >> {output[0]}
+    echo '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">' >> {output[0]}
+    echo '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total Depth">' >> {output[0]}
+    echo '##FORMAT=<ID=REF_DP,Number=1,Type=Integer,Description="Depth of reference base">' >> {output[0]}
+    echo '##FORMAT=<ID=REF_RV,Number=1,Type=Integer,Description="Depth of reference base on reverse reads">' >> {output[0]}
+    echo '##FORMAT=<ID=REF_QUAL,Number=1,Type=Integer,Description="Mean quality of reference base">' >> {output[0]}
+    echo '##FORMAT=<ID=ALT_DP,Number=1,Type=Integer,Description="Depth of alternate base">' >> {output[0]}
+    echo '##FORMAT=<ID=ALT_RV,Number=1,Type=Integer,Description="Depth of alternate base on reverse reads">' >> {output[0]}
+    echo '##FORMAT=<ID=ALT_QUAL,Number=1,Type=Integer,Description="Mean quality of alternate base">' >> {output[0]}
+    echo '##FORMAT=<ID=ALT_FREQ,Number=1,Type=Float,Description="Frequency of alternate base">' >> {output[0]}
     printf "#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\n" >> {output[0]}
     echo "0 variants (empty iVar tsv)" > {output[1]}
 fi
