@@ -42,10 +42,14 @@ def load_genome(path):
 
 
 def qualities(length, rng):
+    # stays >= Q30 end to end: viralrecon's fastp runs
+    # --qualified_quality_phred 30 --unqualified_percent_limit 10, so a
+    # Q38->Q23 decline discards every read (live: 1000 pairs -> 2).
+    # Q38->Q32 matches modern Illumina data.
     qs = []
     for i in range(length):
-        q = 38 - 15 * (i / length) + rng.gauss(0, 1.5)
-        qs.append(chr(33 + int(max(2, min(40, round(q))))))
+        q = 38 - 6 * (i / length) + rng.gauss(0, 1.0)
+        qs.append(chr(33 + int(max(30, min(40, round(q))))))
     return "".join(qs)
 
 
