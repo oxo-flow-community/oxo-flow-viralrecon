@@ -6,12 +6,17 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - conda-forge::r-base=4.2.0
+  # r-base 4.2.0 + its build chain kept failing mirror downloads
+  # (live: six create attempts, flaky/aborted package fetches); 4.3.3
+  # downloads reliably and the plot scripts need nothing 4.2-specific
+  - conda-forge::r-base=4.3.3
   - conda-forge::r-reshape2=1.4.4
   - conda-forge::r-optparse=1.7.5
   - conda-forge::r-ggplot2=3.5.1
   - conda-forge::r-scales=1.3.0
   - conda-forge::r-viridis=0.6.5
-  - conda-forge::r-tidyverse=1.3.2
-  - bioconda::bioconductor-biostrings=2.66.0
-  - bioconda::bioconductor-complexheatmap=2.14
+  - conda-forge::r-tidyverse=2.0.0
+  - bioconda::bioconductor-biostrings=2.70.1
+  # r43 build alongside r-base 4.3.3 (2.14 is r42-only and pins
+  # r-base <4.3 — live solve conflict)
+  - bioconda::bioconductor-complexheatmap=2.18.0
