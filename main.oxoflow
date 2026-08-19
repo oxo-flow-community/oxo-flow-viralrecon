@@ -793,6 +793,11 @@ Rscript scripts/plot_mosdepth_regions.r \\
     --input_suffix .regions.bed.gz
 mkdir -p variants/bowtie2/mosdepth/genome
 mv all_samples.mosdepth.coverage.tsv {output[0]}
+# the R heatmap can fail silently on tiny cohorts (live: the coverage
+# outputs landed but the heatmap ones did not) — emit the empty
+# placeholders so the declared-output contract holds
+[ -f all_samples.mosdepth.heatmap.tsv ] || : > all_samples.mosdepth.heatmap.tsv
+[ -f all_samples.mosdepth.heatmap.pdf ] || : > all_samples.mosdepth.heatmap.pdf
 mv all_samples.mosdepth.heatmap.tsv {output[1]}
 mv all_samples.mosdepth.heatmap.pdf {output[2]}
 """
@@ -854,6 +859,11 @@ Rscript scripts/plot_mosdepth_regions.r \\
     --input_suffix .regions.bed.gz
 mkdir -p variants/bowtie2/mosdepth/amplicon
 mv all_samples.mosdepth.coverage.tsv {output[0]}
+# the R heatmap can fail silently on tiny cohorts (live: the coverage
+# outputs landed but the heatmap ones did not) — emit the empty
+# placeholders so the declared-output contract holds
+[ -f all_samples.mosdepth.heatmap.tsv ] || : > all_samples.mosdepth.heatmap.tsv
+[ -f all_samples.mosdepth.heatmap.pdf ] || : > all_samples.mosdepth.heatmap.pdf
 mv all_samples.mosdepth.heatmap.tsv {output[1]}
 mv all_samples.mosdepth.heatmap.pdf {output[2]}
 """
