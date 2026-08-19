@@ -5,7 +5,11 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - bioconda::multiqc=1.31
+  # 1.31 writes per-plot yamls (fastp_filtered_reads_plot.yaml) but the
+  # bundled multiqc_to_custom_csv.py (upstream viralrecon's) reads the
+  # aggregate names (multiqc_fastp.yaml) — 1.21 writes those (live: the
+  # script found nothing and the declared csvs never appeared)
+  - bioconda::multiqc=1.21
   # multiqc_to_custom_csv.py imports yaml directly; multiqc 1.31 does
   # not pin pyyaml on this platform (live: ModuleNotFoundError)
   - conda-forge::pyyaml=6.0.2
