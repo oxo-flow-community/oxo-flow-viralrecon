@@ -6,7 +6,10 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - conda-forge::r-base=4.2.0
+  # r-base 4.2.0 + its build chain kept failing mirror downloads
+  # (live: six create attempts, flaky/aborted package fetches); 4.3.3
+  # downloads reliably and the plot scripts need nothing 4.2-specific
+  - conda-forge::r-base=4.3.3
   - conda-forge::r-reshape2=1.4.4
   - conda-forge::r-optparse=1.7.5
   - conda-forge::r-ggplot2=3.5.1
