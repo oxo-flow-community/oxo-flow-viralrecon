@@ -1457,6 +1457,10 @@ python scripts/make_variants_long_table.py \\
     --snpsift_dir ./snpsift \\
     --pangolin_dir ./pangolin \\
     --variant_caller ivar
+# zero-variant samples: the script silently skips the write when every
+# query table is empty (upstream drops such samples via the
+# zero-variant-sample filter, the documented runtime-filter deviation)
+[ -f variants_long_table.csv ] || printf "SAMPLE\\n" > variants_long_table.csv
 mv variants_long_table.csv {output[0]}
 """
 
