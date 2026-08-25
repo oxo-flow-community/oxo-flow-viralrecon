@@ -1,0 +1,8 @@
+# Environment for UNICYCLER — pinned exactly to the upstream
+# nf-core/unicycler module.
+name: unicycler
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::unicycler=0.5.1

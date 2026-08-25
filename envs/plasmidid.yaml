@@ -1,0 +1,8 @@
+# Environment for PLASMIDID — pinned exactly to the upstream
+# nf-core/plasmidid module.
+name: plasmidid
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::plasmidid=1.6.5

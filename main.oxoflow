@@ -22,10 +22,21 @@
 #   whose command runs them sequentially. Every merge is listed in the
 #   README fidelity table.
 # - The default path uses amplicon protocol + iVar variant calling + SPAdes
-#   assembly. Non-amplicon (shotgun/wgs) variant calling, markduplicates and
-#   plasmidID are OFF by default exactly like upstream and are not ported.
-# - Network-download processes (KRAKEN2_BUILD human db, PANGOLIN_UPDATEDATA,
-#   FREYJA_UPDATE) are not ported; point the config at local files instead.
+#   assembly. The non-default branches are ported as when-gated rules that
+#   mirror the upstream params they toggle (all OFF by default exactly like
+#   upstream): bcftools variant calling (variant_caller='bcftools'),
+#   consensus with iVar (consensus_caller='ivar'), the metagenomic/wgs
+#   protocol (protocol='metagenomic'; upstream 3.0.0 has no 'wgs' protocol
+#   value), the unicycler and minia assemblers (assemblers='unicycler'/'minia'),
+#   Picard MarkDuplicates (skip_markduplicates=false), plasmidID
+#   (skip_plasmidid=false) and the network-download processes
+#   (KRAKEN2_BUILD when kraken2_db='', FREYJA_UPDATE when a freyja db path is
+#   empty, PANGOLIN_UPDATEDATA when pango_database=''). Branch rules that
+#   consume the same canonical outputs as the default path write to those
+#   same paths under mutually-exclusive gates (the engine accepts this).
+# - The nanopore platform branch (guppybasecaller, artic minion etc.) is not
+#   ported: guppybasecaller is a commercial ONT tool and no nanopore fixture
+#   exists; upstream workflows/nanopore are structurally distinct.
 # - Runtime channel filters (fastp "reads after filtering" check,
 #   min_mapped_reads gate, zero-variant-sample filter) have no oxo-flow
 #   equivalent and are documented in the fidelity table as deviations.
@@ -50,18 +61,26 @@ gff_ends_gz = false
 primer_bed_ends_gz = false
 # --- Kraken2 host-removal database (upstream --kraken2_db, tar.gz) ---
 kraken2_db = "reference/kraken2_db.tar.gz"
+# upstream params.kraken2_db_name — the library KRAKEN2_BUILD downloads when
+# kraken2_db is left empty (gated rule kraken2_build)
+kraken2_db_name = "human"
 kraken2_variants_host_filter = false
 kraken2_assembly_host_filter = true
 # --- Nextclade dataset (upstream genome config for MN908947.3) ---
 nextclade_dataset = ""
 nextclade_dataset_name = "sars-cov-2"
 nextclade_dataset_tag = "2024-10-17--16-48-48Z"
-# --- Pangolin (upstream --pango_database; a directory. PANGOLIN_UPDATEDATA,
-#     the network download of the data directory, is not ported.) ---
+# --- Pangolin (upstream --pango_database; a directory. When left empty the
+#     gated rules pangolin_updatedata + pangolin_run_updated download the
+#     data directory instead, mirroring upstream PANGOLIN_UPDATEDATA.) ---
 pango_database = "test/fixtures/refs/pangolin_db"
-# --- Freyja (upstream --freyja_barcodes / --freyja_lineages. FREYJA_UPDATE,
-#     the network download, is not ported.) ---
+# --- Freyja (upstream --freyja_barcodes / --freyja_lineages. When either is
+#     left empty the gated rules freyja_update + freyja_demix_updated /
+#     freyja_boot_updated download and use the upstream DB instead.) ---
 freyja_barcodes = "test/fixtures/refs/freyja_barcodes.csv"
+# upstream params.freyja_db_name — where FREYJA_UPDATE writes its download
+# (upstream default 'freyja_db'; the port points into reference/)
+freyja_db_name = "reference/freyja_db"
 # freyja's meta format is the curated_lineages JSON (buildLineageMap
 # json.loads it — live: the CSV default died in freyja boot with
 # JSONDecodeError); the CSV sibling is kept as the barcodes-side table
@@ -77,8 +96,11 @@ out_dir = "results"
 platform = "illumina"
 protocol = "amplicon"
 # --- Variant calling (upstream params.variant_caller defaults to 'ivar' for
-#     the amplicon protocol; the bcftools variant-caller branch is not ported) ---
+#     the amplicon protocol and 'bcftools' otherwise; both branches are
+#     ported as when-gated rules) ---
 variant_caller = "ivar"
+# --- Consensus caller (upstream params.consensus_caller; both the bcftools
+#     and ivar branches are ported as when-gated rules) ---
 consensus_caller = "bcftools"
 min_mapped_reads = 1000
 ivar_trim_noprimer = false
@@ -89,7 +111,11 @@ save_trimmed_fail = false
 # --- Consensus QC ---
 min_contig_length = 200
 min_perc_contig_aligned = 0.7
-# --- Assembly (only the upstream default 'spades' assembler is ported) ---
+# --- Assembly (upstream params.assemblers may list several assemblers; the
+#     port's when-language has no 'in' operator, so assemblers takes ONE
+#     name and the unicycler/minia branches are gated on equality:
+#     assemblers='spades' | 'unicycler' | 'minia'. Comma-separated lists are
+#     a documented deviation.) ---
 assemblers = "spades"
 spades_mode = "rnaviral"
 # --- Primer trimming for assembly ---
@@ -122,6 +148,14 @@ skip_blast = false
 skip_cutadapt = false
 skip_noninternal_primers = false
 skip_plasmidid = true
+# upstream params.filter_duplicates (default false) — passed to
+# PICARD_MARKDUPLICATES as REMOVE_DUPLICATES=true when set
+filter_duplicates = false
+# --- Additional annotation (upstream params.additional_annotation; empty =
+#     off. A GFF/GTF to annotate the variants with in addition to the main
+#     reference annotation, run through snpEff + SnpSift + the variants long
+#     table. .gz files are gunzipped by build_snpeff_db_additional.) ---
+additional_annotation = ""
 # --- MultiQC ---
 multiqc_title = ""
 
@@ -213,7 +247,7 @@ name = "untar_kraken2_db"
 input = ["{config.kraken2_db}"]
 output = ["reference/kraken2_db"]
 description = "Extract the Kraken2 database tarball (upstream UNTAR_KRAKEN2_DB)"
-when = "!config.skip_kraken2"
+when = "!config.skip_kraken2 && config.kraken2_db != ''"
 shell = """
 mkdir -p reference/kraken2_db
 # --no-same-owner = upstream UNTAR ext.args2 (applied to all PREPARE_GENOME
@@ -232,6 +266,32 @@ time_limit = "4h"
 
 [rules.environment]
 conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "kraken2_build"
+input = []
+output = ["reference/kraken2_db"]
+description = "Download taxonomy and build the Kraken2 database (upstream KRAKEN2_BUILD, process_high label)"
+# upstream runs KRAKEN2_BUILD when !skip_kraken2 && !kraken2_db; the built
+# db lands on the same canonical reference/kraken2_db path the untar rule
+# writes to, so the kraken2 rule needs no changes (mutually-exclusive gates)
+when = "!config.skip_kraken2 && config.kraken2_db == ''"
+shell = """
+# network download; the upstream module builds into ./kraken2_db, the port
+# builds straight into the canonical reference/kraken2_db dir instead
+mkdir -p reference/kraken2_db
+kraken2-build --db reference/kraken2_db --threads {threads} --download-taxonomy
+kraken2-build --db reference/kraken2_db --threads {threads} --download-library {config.kraken2_db_name}
+kraken2-build --db reference/kraken2_db --threads {threads} --build
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/kraken2_build.yaml"
 
 [[rules]]
 name = "collapse_primers"
@@ -704,6 +764,94 @@ time_limit = "8h"
 [rules.environment]
 conda = "envs/samtools.yaml"
 
+[[rules]]
+name = "markduplicates"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/bowtie2/{sample}.markduplicates.sorted.bam",
+    "variants/bowtie2/{sample}.markduplicates.sorted.bam.bai",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.stats",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.flagstat",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.idxstats",
+    "variants/bowtie2/picard_metrics/{sample}.markduplicates.sorted.MarkDuplicates.metrics.txt",
+]
+description = "Mark (and optionally filter) duplicates with Picard, then index and collect stats (upstream BAM_MARKDUPLICATES_PICARD)"
+# upstream BAM_MARKDUPLICATES_PICARD replaces ch_bam so picard_metrics,
+# mosdepth, variant calling etc. all consume the marked BAM; the port
+# keeps the pre-dedup BAM in the main pipeline and publishes the marked
+# BAM alongside (documented deviation)
+when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/samtools_stats variants/bowtie2/picard_metrics
+# upstream ext.args: --ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT
+# --TMP_DIR tmp, plus REMOVE_DUPLICATES=true when params.filter_duplicates
+args="--ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT --TMP_DIR tmp"
+[ "{config.filter_duplicates}" != "false" ] && args="$args REMOVE_DUPLICATES=true"
+# -Xmx28800M = upstream task.memory.mega * 0.8 (process_medium = 36GB)
+picard \\
+    -Xmx28800M \\
+    MarkDuplicates \\
+    $args \\
+    --INPUT {input[0]} \\
+    --OUTPUT {output[0]} \\
+    --REFERENCE_SEQUENCE {input[1]} \\
+    --METRICS_FILE {output[5]}
+samtools index -@ {threads} {output[0]}
+samtools stats --threads {threads} {output[0]} > {output[2]}
+samtools flagstat --threads {threads} {output[0]} > {output[3]}
+samtools idxstats --threads {threads} {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/picard.yaml"
+
+[[rules]]
+name = "markduplicates_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/bowtie2/{sample}.markduplicates.sorted.bam",
+    "variants/bowtie2/{sample}.markduplicates.sorted.bam.bai",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.stats",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.flagstat",
+    "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.idxstats",
+    "variants/bowtie2/picard_metrics/{sample}.markduplicates.sorted.MarkDuplicates.metrics.txt",
+]
+description = "Mark (and optionally filter) duplicates with Picard on untrimmed reads (upstream BAM_MARKDUPLICATES_PICARD, metagenomic branch)"
+when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'metagenomic'"
+shell = """
+mkdir -p variants/bowtie2/samtools_stats variants/bowtie2/picard_metrics
+# upstream ext.args: --ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT
+# --TMP_DIR tmp, plus REMOVE_DUPLICATES=true when params.filter_duplicates
+args="--ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT --TMP_DIR tmp"
+[ "{config.filter_duplicates}" != "false" ] && args="$args REMOVE_DUPLICATES=true"
+# -Xmx28800M = upstream task.memory.mega * 0.8 (process_medium = 36GB)
+picard \\
+    -Xmx28800M \\
+    MarkDuplicates \\
+    $args \\
+    --INPUT {input[0]} \\
+    --OUTPUT {output[0]} \\
+    --REFERENCE_SEQUENCE {input[1]} \\
+    --METRICS_FILE {output[5]}
+samtools index -@ {threads} {output[0]}
+samtools stats --threads {threads} {output[0]} > {output[2]}
+samtools flagstat --threads {threads} {output[0]} > {output[3]}
+samtools idxstats --threads {threads} {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/picard.yaml"
+
 # ---------------------------------------------------------------------------
 # 5. Alignment QC (upstream PICARD_COLLECTMULTIPLEMETRICS + MOSDEPTH)
 # ---------------------------------------------------------------------------
@@ -723,6 +871,40 @@ output = [
 ]
 description = "Collect alignment metrics with Picard (upstream PICARD_COLLECTMULTIPLEMETRICS)"
 when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/bowtie2/picard_metrics
+# -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
+picard \\
+    -Xmx4800M \\
+    CollectMultipleMetrics \\
+    --VALIDATION_STRINGENCY LENIENT --TMP_DIR tmp \\
+    --INPUT {input[0]} \\
+    --OUTPUT variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics \\
+    --REFERENCE_SEQUENCE {input[1]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/picard.yaml"
+
+[[rules]]
+name = "picard_metrics_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.alignment_summary_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.base_distribution_by_cycle_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.insert_size_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_by_cycle_metrics",
+    "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.quality_distribution_metrics",
+]
+description = "Collect alignment metrics with Picard on untrimmed reads (upstream PICARD_COLLECTMULTIPLEMETRICS, metagenomic branch)"
+# upstream runs PICARD_COLLECTMULTIPLEMETRICS for both protocols on ch_bam;
+# same canonical picard_metrics outputs as picard_metrics (exclusive gates)
+when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'metagenomic'"
 shell = """
 mkdir -p variants/bowtie2/picard_metrics
 # -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
@@ -775,6 +957,37 @@ time_limit = "8h"
 conda = "envs/mosdepth.yaml"
 
 [[rules]]
+name = "mosdepth_genome_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam"]
+output = [
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.summary.txt",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.mosdepth.global.dist.txt",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.per-base.bed.gz",
+    "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.regions.bed.gz",
+]
+description = "Genome-wide coverage with mosdepth on untrimmed reads (upstream MOSDEPTH_GENOME, metagenomic branch)"
+# upstream MOSDEPTH_GENOME runs for both protocols on ch_bam; the wgs
+# branch consumes the untrimmed sorted bam and writes the same canonical
+# mosdepth/genome outputs as mosdepth_genome (mutually-exclusive gates)
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'metagenomic'"
+shell = """
+mkdir -p variants/bowtie2/mosdepth/genome
+mosdepth \\
+    --threads {threads} \\
+    --fast-mode --by 200 \\
+    variants/bowtie2/mosdepth/genome/{sample}.mosdepth \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/mosdepth.yaml"
+
+[[rules]]
 name = "plot_mosdepth_genome"
 input = ["variants/bowtie2/mosdepth/genome/*.regions.bed.gz"]
 output = [
@@ -783,8 +996,8 @@ output = [
     "variants/bowtie2/mosdepth/genome/all_samples.mosdepth.heatmap.pdf",
 ]
 description = "Coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS_GENOME)"
-when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
-depends_on = ["mosdepth_genome"]
+when = "!config.skip_variants && !config.skip_mosdepth"
+depends_on = ["mosdepth_genome", "mosdepth_genome_wgs"]
 shell = """
 Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
@@ -908,6 +1121,35 @@ time_limit = "8h"
 conda = "envs/freyja.yaml"
 
 [[rules]]
+name = "freyja_variants_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
+output = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+]
+description = "Call variants and depths for Freyja on untrimmed reads (upstream FREYJA_VARIANTS, metagenomic branch)"
+# upstream BAM_VARIANT_DEMIX_BOOT_FREYJA runs for both protocols on ch_bam;
+# same canonical variants outputs as freyja_variants (exclusive gates)
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'metagenomic'"
+shell = """
+mkdir -p variants/freyja/variants
+freyja \\
+    variants \\
+    --ref {input[1]} \\
+    --variants {output[0]} \\
+    --depths {output[1]} \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
 name = "freyja_demix"
 input = [
     "variants/freyja/variants/{sample}.variants.tsv",
@@ -917,7 +1159,9 @@ input = [
 ]
 output = ["variants/freyja/demix/{sample}.tsv"]
 description = "Deconvolute the sample lineage mixture with Freyja (upstream FREYJA_DEMIX)"
-when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon'"
+# upstream runs FREYJA_DEMIX for both protocols; when either database path is
+# empty the freyja_demix_updated rule (fed by freyja_update) takes over
+when = "!config.skip_variants && !config.skip_freyja && config.freyja_barcodes != '' && config.freyja_lineages != ''"
 shell = """
 mkdir -p variants/freyja/demix
 # same zero-variant guard as freyja_boot: freyja demix degenerates on
@@ -961,13 +1205,132 @@ output = [
     "variants/freyja/bootstrap/{sample}_summarized.csv",
 ]
 description = "Bootstrap the lineage assignment with Freyja (upstream FREYJA_BOOT)"
-when = "!config.skip_variants && !config.skip_freyja && !config.skip_freyja_boot && config.protocol == 'amplicon'"
+when = "!config.skip_variants && !config.skip_freyja && !config.skip_freyja_boot && config.freyja_barcodes != '' && config.freyja_lineages != ''"
 shell = """
 mkdir -p variants/freyja/bootstrap
 # zero-variant samples: freyja boot degenerates on an empty mutation
 # set (live: IndexError inside build_mix_and_depth_arrays — upstream
 # drops such samples via the zero-variant-sample filter, the
 # documented runtime-filter deviation). Emit the empty channel.
+n_pass=$(awk -F"\\t" 'NR > 1 && $13 == "TRUE" {n++} END {print n+0}' {input[0]})
+if [ "$n_pass" -eq 0 ]; then
+    echo "0 PASSing variants — emitting the empty freyja boot channel" 1>&2
+    echo "lineage,abundance" > {output[0]}
+    echo "lineage,abundance" > {output[1]}
+else
+    args="--boxplot pdf"
+    [ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff} --boxplot pdf"
+    freyja \\
+        boot \\
+        $args \\
+        --nt {threads} \\
+        --nb {config.freyja_repeats} \\
+        --output_base variants/freyja/bootstrap/{sample}.boot \\
+        --barcodes {input[2]} \\
+        --meta {input[3]} \\
+        {input[0]} \\
+        {input[1]}
+    mv variants/freyja/bootstrap/{sample}.boot.lineages.csv {output[0]}
+    mv variants/freyja/bootstrap/{sample}.boot_summarized.csv {output[1]}
+fi
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
+name = "freyja_update"
+input = []
+output = [
+    "{config.freyja_db_name}/usher_barcodes.feather",
+    "{config.freyja_db_name}/lineages.yml",
+    "{config.freyja_db_name}/curated_lineages.json",
+]
+description = "Download the Freyja database (upstream FREYJA_UPDATE)"
+# upstream runs FREYJA_UPDATE when either freyja_barcodes or freyja_lineages
+# is empty, then feeds the downloaded files to demix/boot (the port mirrors
+# this with the freyja_demix_updated / freyja_boot_updated rules)
+when = "!config.skip_variants && !config.skip_freyja && (config.freyja_barcodes == '' || config.freyja_lineages == '')"
+shell = """
+mkdir -p {config.freyja_db_name}
+freyja \\
+    update \\
+    --outdir {config.freyja_db_name}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
+name = "freyja_demix_updated"
+input = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+    "{config.freyja_db_name}/usher_barcodes.feather",
+    "{config.freyja_db_name}/curated_lineages.json",
+]
+output = ["variants/freyja/demix/{sample}.tsv"]
+description = "Deconvolute the sample lineage mixture with the downloaded Freyja DB (upstream FREYJA_DEMIX after FREYJA_UPDATE)"
+when = "!config.skip_variants && !config.skip_freyja && (config.freyja_barcodes == '' || config.freyja_lineages == '')"
+depends_on = ["freyja_update"]
+shell = """
+mkdir -p variants/freyja/demix
+# same zero-variant guard as freyja_demix (upstream drops such samples)
+n_pass=$(awk -F"\\t" 'NR > 1 && $13 == "TRUE" {n++} END {print n+0}' {input[0]})
+if [ "$n_pass" -eq 0 ]; then
+    echo "0 PASSing variants — emitting the empty freyja demix channel" 1>&2
+    echo -e "lineage\\tabundance" > {output[0]}
+else
+    args=""
+    [ "{config.freyja_depthcutoff}" != "0" ] && args="--depthcutoff {config.freyja_depthcutoff}"
+    freyja \\
+        demix \\
+        $args \\
+        --output {output[0]} \\
+        --barcodes {input[2]} \\
+        --meta {input[3]} \\
+        {input[0]} \\
+        {input[1]}
+fi
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+[[rules]]
+name = "freyja_boot_updated"
+input = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+    "{config.freyja_db_name}/usher_barcodes.feather",
+    "{config.freyja_db_name}/curated_lineages.json",
+]
+output = [
+    "variants/freyja/bootstrap/{sample}.lineages.csv",
+    "variants/freyja/bootstrap/{sample}_summarized.csv",
+]
+description = "Bootstrap the lineage assignment with the downloaded Freyja DB (upstream FREYJA_BOOT after FREYJA_UPDATE)"
+when = "!config.skip_variants && !config.skip_freyja && !config.skip_freyja_boot && (config.freyja_barcodes == '' || config.freyja_lineages == '')"
+depends_on = ["freyja_update"]
+shell = """
+mkdir -p variants/freyja/bootstrap
+# zero-variant guard: same rationale as freyja_boot (live: IndexError
+# inside build_mix_and_depth_arrays on the empty mutation set)
 n_pass=$(awk -F"\\t" 'NR > 1 && $13 == "TRUE" {n++} END {print n+0}' {input[0]})
 if [ "$n_pass" -eq 0 ]; then
     echo "0 PASSing variants — emitting the empty freyja boot channel" 1>&2
@@ -1032,6 +1395,68 @@ time_limit = "8h"
 
 [rules.environment]
 conda = "envs/ivar_mpileup.yaml"
+
+[[rules]]
+name = "call_variants_bcftools"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"]
+output = ["variants/ivar/{sample}.orig.vcf.gz"]
+description = "Call intrahost variants with bcftools on primer-trimmed reads (upstream BCFTOOLS_MPILEUP, amplicon branch)"
+# upstream BCFTOOLS_MPILEUP emits vcf.gz + tbi + stats; the stats only feed
+# the zero-variant-sample channel filter (a documented runtime-filter
+# deviation), so only the vcf is kept. The bcftools NORM/TABIX/STATS steps
+# run in norm_vcf_bcftools, which writes the canonical sorted.vcf.gz that
+# snpeff_ann / consensus_filter_bcftools / variants_long_table_bcftools
+# consume — identical downstream handling to the ivar branch.
+when = "!config.skip_variants && config.variant_caller == 'bcftools' && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar
+echo "{sample}" > sample_name.list
+bcftools \\
+    mpileup \\
+    --fasta-ref {input[1]} \\
+    --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 20 \\
+    --annotate FORMAT/AD,FORMAT/ADF,FORMAT/ADR,FORMAT/DP,FORMAT/SP,INFO/AD,INFO/ADF,INFO/ADR \\
+    {input[0]} \\
+    | bcftools call --output-type v --ploidy 1 --keep-alts --keep-masked-ref --multiallelic-caller --variants-only \\
+    | bcftools reheader --samples sample_name.list \\
+    | bcftools view --output-file {output[0]} --output-type z --include 'INFO/DP>=10'
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
+name = "call_variants_bcftools_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
+output = ["variants/ivar/{sample}.orig.vcf.gz"]
+description = "Call intrahost variants with bcftools on untrimmed reads (upstream BCFTOOLS_MPILEUP, metagenomic branch)"
+when = "!config.skip_variants && config.variant_caller == 'bcftools' && config.protocol == 'metagenomic'"
+shell = """
+mkdir -p variants/ivar
+echo "{sample}" > sample_name.list
+bcftools \\
+    mpileup \\
+    --fasta-ref {input[1]} \\
+    --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 20 \\
+    --annotate FORMAT/AD,FORMAT/ADF,FORMAT/ADR,FORMAT/DP,FORMAT/SP,INFO/AD,INFO/ADF,INFO/ADR \\
+    {input[0]} \\
+    | bcftools call --output-type v --ploidy 1 --keep-alts --keep-masked-ref --multiallelic-caller --variants-only \\
+    | bcftools reheader --samples sample_name.list \\
+    | bcftools view --output-file {output[0]} --output-type z --include 'INFO/DP>=10'
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
 
 [[rules]]
 name = "ivar_to_vcf"
@@ -1125,6 +1550,41 @@ time_limit = "8h"
 conda = "envs/bcftools.yaml"
 
 [[rules]]
+name = "norm_vcf_bcftools"
+input = ["variants/ivar/{sample}.orig.vcf.gz", "reference/genome.fa"]
+output = [
+    "variants/ivar/{sample}.sorted.vcf.gz",
+    "variants/ivar/{sample}.sorted.vcf.gz.tbi",
+    "variants/ivar/{sample}.bcftools_stats.txt",
+]
+description = "Split multi-allelic sites, sort, index and collect stats (upstream BCFTOOLS_NORM + VCF_TABIX_STATS, bcftools-caller branch)"
+# upstream BCFTOOLS_NORM writes {sample}.vcf.gz (sorted); the port renames it
+# to the canonical variants/ivar/{sample}.sorted.vcf.gz so snpeff_ann,
+# consensus_filter_bcftools and variants_long_table_bcftools are shared with
+# the ivar-caller branch. Runs for both protocols (the orig vcf is canonical).
+when = "!config.skip_variants && config.variant_caller == 'bcftools'"
+shell = """
+mkdir -p variants/ivar
+bcftools norm \\
+    --fasta-ref {input[1]} \\
+    --output {sample}.norm.vcf.gz \\
+    --do-not-normalize --output-type z --multiallelics -any \\
+    --threads {threads} \\
+    {input[0]}
+mv {sample}.norm.vcf.gz {output[0]}
+tabix --threads {threads} -p vcf -f {output[0]}
+bcftools stats {output[0]} > {output[2]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
 name = "snpeff_ann"
 input = ["variants/ivar/{sample}.sorted.vcf.gz", "reference/genome.fa", "reference/snpeff_db", "reference/snpeff.config"]
 output = [
@@ -1135,7 +1595,7 @@ output = [
     "variants/ivar/snpeff/bcftools_stats/{sample}.snpeff.bcftools_stats.txt",
 ]
 description = "Annotate variants with snpEff, then bgzip/tabix/stats (upstream SNPEFF_ANN + VCF_BGZIP_TABIX_STATS)"
-when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'amplicon'"
+when = "!config.skip_variants && !config.skip_snpeff"
 depends_on = ["build_snpeff_db"]
 shell = """
 mkdir -p variants/ivar/snpeff/bcftools_stats
@@ -1168,7 +1628,7 @@ name = "snpsift_extract"
 input = ["variants/ivar/snpeff/{sample}.snpeff.vcf.gz"]
 output = ["variants/ivar/snpeff/{sample}.snpsift.txt"]
 description = "Extract annotation fields with SnpSift (upstream SNPSIFT_EXTRACTFIELDS)"
-when = "!config.skip_variants && !config.skip_snpeff && config.protocol == 'amplicon'"
+when = "!config.skip_variants && !config.skip_snpeff"
 shell = """
 # heap = machine-effective memory (upstream hardcodes task.memory.giga 36G)
 SnpSift \\
@@ -1208,8 +1668,8 @@ output = [
     "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz",
     "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
 ]
-description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon'"
+description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX, iVar-caller include)"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1217,6 +1677,38 @@ bcftools filter \\
     --threads {threads} \\
     --output-type z \\
     --include 'FORMAT/ALT_FREQ >= 0.75' \\
+    {input[0]}
+tabix --threads {threads} -p vcf -f {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
+name = "consensus_filter_bcftools"
+input = ["variants/ivar/{sample}.sorted.vcf.gz"]
+output = [
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz",
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
+]
+description = "Filter variants by allele depth (upstream BCFTOOLS_FILTER + TABIX_TABIX, bcftools-caller include)"
+# upstream picks the BCFTOOLS_FILTER include by variant_caller; both variants
+# write the same canonical filtered.vcf.gz consumed by consensus_call /
+# consensus_call_wgs (mutually-exclusive gates). No protocol gate: the
+# canonical sorted.vcf.gz exists for amplicon and metagenomic alike.
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'bcftools'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools
+bcftools filter \\
+    --output {output[0]} \\
+    --threads {threads} \\
+    --output-type z \\
+    --include 'FORMAT/AD[:1] / FORMAT/DP >= 0.75' \\
     {input[0]}
 tabix --threads {threads} -p vcf -f {output[0]}
 """
@@ -1275,6 +1767,115 @@ time_limit = "8h"
 [rules.environment]
 conda = "envs/consensus.yaml"
 
+[[rules]]
+name = "consensus_call_wgs"
+input = [
+    "variants/bowtie2/{sample}.sorted.bam",
+    "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz",
+    "reference/genome.fa",
+]
+output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
+description = "Mask low-coverage positions and call the consensus sequence on untrimmed reads (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER, metagenomic branch)"
+# upstream CONSENSUS_BCFTOOLS runs for both protocols; same canonical
+# consensus output as consensus_call (mutually-exclusive gates)
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'metagenomic'"
+shell = """
+samtools \\
+    mpileup \\
+    -a --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 \\
+    --reference {input[2]} \\
+    {input[0]} \\
+    | awk -v OFS='\\t' '{print $1, $2-1, $2, $4}' | awk '$4 < 10' > lowcov_positions.txt
+python scripts/make_bed_mask.py \\
+    {input[1]} \\
+    lowcov_positions.txt \\
+    {sample}.coverage.masked.bed
+bedtools \\
+    merge \\
+    -i {sample}.coverage.masked.bed \\
+    > {sample}.coverage.merged.bed
+bedtools \\
+    maskfasta \\
+    -fi {input[2]} \\
+    -bed {sample}.coverage.merged.bed \\
+    -fo {sample}.masked.fa
+cat {sample}.masked.fa \\
+    | bcftools \\
+        consensus \\
+        {input[1]} \\
+        > {sample}.consensus.fa
+sed "s/>/>{sample} /g" {sample}.consensus.fa > {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/consensus.yaml"
+
+[[rules]]
+name = "consensus_ivar"
+input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"]
+output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
+description = "Call the consensus sequence with iVar (upstream IVAR_CONSENSUS, amplicon branch)"
+# upstream CONSENSUS_IVAR publishes to variants/<caller>/consensus/ivar; the
+# port writes the canonical consensus path (variants/ivar/consensus/bcftools/)
+# so the shared CONSENSUS_QC rules (quast_consensus, pangolin, nextclade,
+# plot_base_density, nextclade_clade_mqc) work unchanged for either
+# consensus caller — internal path canonicalization, see README fidelity table
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'amplicon'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools
+samtools \\
+    mpileup \\
+    --reference {input[1]} \\
+    --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 -aa \\
+    {input[0]} \\
+    | ivar \\
+        consensus \\
+        -t 0.75 -q 20 -m 10 -n N \\
+        -p {sample}.consensus
+mv {sample}.consensus.fa {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/ivar.yaml"
+
+[[rules]]
+name = "consensus_ivar_wgs"
+input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
+output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
+description = "Call the consensus sequence with iVar on untrimmed reads (upstream IVAR_CONSENSUS, metagenomic branch)"
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'metagenomic'"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools
+samtools \\
+    mpileup \\
+    --reference {input[1]} \\
+    --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 -aa \\
+    {input[0]} \\
+    | ivar \\
+        consensus \\
+        -t 0.75 -q 20 -m 10 -n N \\
+        -p {sample}.consensus
+mv {sample}.consensus.fa {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/ivar.yaml"
+
 # ---------------------------------------------------------------------------
 # 9. Consensus QC (upstream CONSENSUS_QC subworkflow)
 # ---------------------------------------------------------------------------
@@ -1287,8 +1888,10 @@ output = [
     "variants/ivar/consensus/bcftools/quast.consensus.tsv",
 ]
 description = "Assembly QC across consensus sequences with QUAST (upstream QUAST, consensus branch)"
-when = "!config.skip_consensus && !config.skip_variants_quast && config.protocol == 'amplicon'"
-depends_on = ["consensus_call"]
+# upstream CONSENSUS_QC runs for both consensus callers and both protocols;
+# the consensus fasta is canonical so this rule serves every branch
+when = "!config.skip_consensus && !config.skip_variants_quast"
+depends_on = ["consensus_call", "consensus_call_wgs", "consensus_ivar", "consensus_ivar_wgs"]
 shell = """
 quast.py \\
     --output-dir {output[0]} \\
@@ -1316,7 +1919,61 @@ name = "pangolin"
 input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "{config.pango_database}"]
 output = ["variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv"]
 description = "Assign lineages with Pangolin (upstream PANGOLIN_RUN)"
-when = "!config.skip_consensus && !config.skip_pangolin && config.protocol == 'amplicon'"
+# upstream PANGOLIN_RUN uses pango_database when set and PANGOLIN_UPDATEDATA
+# otherwise; when pango_database is empty the pangolin_run_updated rule
+# (fed by pangolin_updatedata) takes over
+when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database != ''"
+shell = """
+mkdir -p variants/ivar/consensus/bcftools/pangolin
+export XDG_CACHE_HOME=/tmp/.cache
+pangolin \\
+    {input[0]} \\
+    --datadir {input[1]} \\
+    --outfile {output[0]} \\
+    --threads {threads}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/pangolin.yaml"
+
+[[rules]]
+name = "pangolin_updatedata"
+input = []
+output = ["reference/pangolin_db"]
+description = "Download the Pangolin data directory (upstream PANGOLIN_UPDATEDATA)"
+# upstream runs PANGOLIN_UPDATEDATA when pango_database is empty and feeds
+# the downloaded db to PANGOLIN_RUN; the port mirrors this with the
+# pangolin_run_updated rule (mutually-exclusive gates on pango_database)
+when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database == ''"
+shell = """
+export XDG_CACHE_HOME=/tmp/.cache
+mkdir -p reference/pangolin_db
+pangolin \\
+    --update-data \\
+    --threads {threads} \\
+    --datadir reference/pangolin_db
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/pangolin.yaml"
+
+[[rules]]
+name = "pangolin_run_updated"
+input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/pangolin_db"]
+output = ["variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv"]
+description = "Assign lineages with the downloaded Pangolin data dir (upstream PANGOLIN_RUN after PANGOLIN_UPDATEDATA)"
+when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database == ''"
+depends_on = ["pangolin_updatedata"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/pangolin
 export XDG_CACHE_HOME=/tmp/.cache
@@ -1340,7 +1997,7 @@ name = "nextclade"
 input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/nextclade_db"]
 output = ["variants/ivar/consensus/bcftools/nextclade/{sample}.csv"]
 description = "Assign clades with Nextclade (upstream NEXTCLADE_RUN)"
-when = "!config.skip_consensus && !config.skip_nextclade && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && !config.skip_nextclade"
 depends_on = ["get_nextclade_dataset"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/nextclade
@@ -1371,7 +2028,7 @@ output = [
     "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.ACTG_density.pdf",
 ]
 description = "Plot consensus base density (upstream PLOT_BASE_DENSITY)"
-when = "!config.skip_consensus && !config.skip_consensus_plots && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && !config.skip_consensus_plots"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/base_qc
 Rscript scripts/plot_base_density.r \\
@@ -1393,7 +2050,7 @@ name = "nextclade_clade_mqc"
 input = ["variants/ivar/consensus/bcftools/nextclade/*.csv"]
 output = ["variants/ivar/consensus/bcftools/nextclade/nextclade_clade_mqc.tsv"]
 description = "Build the per-sample clade table for MultiQC (upstream Nextflow channel code getNextcladeFieldMapFromCsv + multiqcTsvFromList; ported as an inline script)"
-when = "!config.skip_consensus && !config.skip_nextclade && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && !config.skip_nextclade"
 depends_on = ["nextclade"]
 shell = """
 python3 - <<'PY'
@@ -1433,8 +2090,10 @@ input = [
     "variants/ivar/consensus/bcftools/pangolin/*.pangolin.csv",
 ]
 output = ["variants/ivar/variants_long_table.csv"]
-description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE)"
-when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.protocol == 'amplicon'"
+description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, iVar-caller query format)"
+# upstream VARIANTS_LONG_TABLE runs for both protocols; the bcftools-caller
+# query format and long table live in variants_long_table_bcftools
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar'"
 depends_on = ["sort_vcf", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
@@ -1462,6 +2121,171 @@ python scripts/make_variants_long_table.py \\
 # zero-variant-sample filter, the documented runtime-filter deviation)
 [ -f variants_long_table.csv ] || printf "SAMPLE\\n" > variants_long_table.csv
 mv variants_long_table.csv {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/variants_long_table.yaml"
+
+[[rules]]
+name = "variants_long_table_bcftools"
+input = [
+    "variants/ivar/*.sorted.vcf.gz",
+    "variants/ivar/snpeff/*.snpsift.txt",
+    "variants/ivar/consensus/bcftools/pangolin/*.pangolin.csv",
+]
+output = ["variants/ivar/variants_long_table.csv"]
+description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, bcftools-caller query format)"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'bcftools'"
+depends_on = ["norm_vcf_bcftools", "snpsift_extract", "pangolin"]
+shell = """
+mkdir -p bcftools_query snpsift pangolin
+for vcf in {input[0]}; do
+    s=$(basename "$vcf" .sorted.vcf.gz)
+    bcftools query \\
+        -H -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%AD\\t]\\n' \\
+        "$vcf" \\
+        > bcftools_query/${s}.bcftools_query.txt
+done
+for txt in {input[1]}; do
+    s=$(basename "$txt" .snpsift.txt)
+    ln -sf "$PWD/$txt" snpsift/${s}.snpsift.txt
+done
+for csv in {input[2]}; do
+    ln -sf "$PWD/$csv" pangolin/
+done
+python scripts/make_variants_long_table.py \\
+    --bcftools_query_dir ./bcftools_query \\
+    --snpsift_dir ./snpsift \\
+    --pangolin_dir ./pangolin \\
+    --variant_caller bcftools
+# zero-variant samples: same empty-table fallback as variants_long_table
+[ -f variants_long_table.csv ] || printf "SAMPLE\\n" > variants_long_table.csv
+mv variants_long_table.csv {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/variants_long_table.yaml"
+
+[[rules]]
+name = "build_snpeff_db_additional"
+input = ["reference/genome.fa", "{config.additional_annotation}"]
+output = [
+    "reference/additional_annotation.gff",
+    "reference/snpeff_db_additional",
+    "reference/snpeff.config.additional",
+]
+description = "Gunzip (if needed) and build the snpEff database for the additional annotation (upstream GUNZIP_GFF + SNPEFF_BUILD, additional-annotation branch)"
+when = "config.additional_annotation != ''"
+shell = """
+# upstream GUNZIP_GFF runs only when the annotation ends in .gz
+if [[ {config.additional_annotation} == *.gz ]]; then
+    gzip -cd {input[1]} > {output[0]}
+else
+    cp {input[1]} {output[0]}
+fi
+mkdir -p reference/snpeff_db_additional/genomes/ reference/snpeff_db_additional/genome/
+ln -sf "$PWD/reference/genome.fa" reference/snpeff_db_additional/genomes/genome.fa
+ln -sf "$PWD/reference/additional_annotation.gff" reference/snpeff_db_additional/genome/genes.gff
+echo "genome.genome : genome" > reference/snpeff.config.additional
+# scratch dir so snpEff's cwd artifacts cannot race the main build_snpeff_db
+mkdir -p .tmp/snpeff_additional && cd .tmp/snpeff_additional
+snpEff \\
+    -Xmx{effective_memory_mb}m \\
+    build \\
+    -config "$PWD/../reference/snpeff.config.additional" \\
+    -dataDir "$PWD/../reference/snpeff_db_additional" \\
+    -gff3 \\
+    -v \\
+    genome
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/snpeff.yaml"
+
+[[rules]]
+name = "additional_annotation"
+input = [
+    "variants/ivar/*.sorted.vcf.gz",
+    "reference/genome.fa",
+    "reference/snpeff_db_additional",
+    "reference/snpeff.config.additional",
+    "variants/ivar/consensus/bcftools/pangolin/*.pangolin.csv",
+]
+output = ["variants/ivar/additional_variants_long_table.csv"]
+description = "Annotate variants with the additional GFF and build its long table (upstream ADDITIONAL_ANNOTATION subworkflow: SNPEFF_ANN + VCF_BGZIP_TABIX_STATS + SNPSIFT_EXTRACTFIELDS + BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE_ADDITIONAL)"
+when = "config.additional_annotation != ''"
+depends_on = ["build_snpeff_db_additional"]
+shell = """
+mkdir -p variants/ivar/additional_annotation bcftools_query_additional snpsift_additional pangolin_additional
+# snpEff on every sample's canonical sorted vcf (upstream SNPEFF_ANN +
+# VCF_BGZIP_TABIX_STATS merged; same commands as snpeff_ann)
+for vcf in {input[0]}; do
+    s=$(basename "$vcf" .sorted.vcf.gz)
+    snpEff \\
+        -Xmx{effective_memory_mb}m \\
+        genome \\
+        -config $PWD/reference/snpeff.config.additional \\
+        -dataDir $PWD/reference/snpeff_db_additional \\
+        "$vcf" \\
+        -csvStats variants/ivar/additional_annotation/${s}.additional.snpeff.csv \\
+        > variants/ivar/additional_annotation/${s}.additional.snpeff.vcf
+    bgzip -c -@ {threads} variants/ivar/additional_annotation/${s}.additional.snpeff.vcf > variants/ivar/additional_annotation/${s}.additional.snpeff.vcf.gz
+    rm variants/ivar/additional_annotation/${s}.additional.snpeff.vcf
+    tabix --threads {threads} -p vcf -f variants/ivar/additional_annotation/${s}.additional.snpeff.vcf.gz
+    SnpSift \\
+        -Xmx{effective_memory_mb}m \\
+        extractFields \\
+        -s "," \\
+        -e "." \\
+        variants/ivar/additional_annotation/${s}.additional.snpeff.vcf.gz \\
+        CHROM POS REF ALT \\
+        "ANN[*].GENE" "ANN[*].GENEID" \\
+        "ANN[*].IMPACT" "ANN[*].EFFECT" \\
+        "ANN[*].FEATURE" "ANN[*].FEATUREID" \\
+        "ANN[*].BIOTYPE" "ANN[*].RANK" "ANN[*].HGVS_C" \\
+        "ANN[*].HGVS_P" "ANN[*].CDNA_POS" "ANN[*].CDNA_LEN" \\
+        "ANN[*].CDS_POS" "ANN[*].CDS_LEN" "ANN[*].AA_POS" \\
+        "ANN[*].AA_LEN" "ANN[*].DISTANCE" "EFF[*].EFFECT" \\
+        "EFF[*].FUNCLASS" "EFF[*].CODON" "EFF[*].AA" "EFF[*].AA_LEN" \\
+        > snpsift_additional/${s}.snpsift.txt
+    # bcftools query on the ORIGINAL called vcf (upstream BCFTOOLS_QUERY on
+    # ch_vcf, same per-caller format as the main long table)
+    if [ "{config.variant_caller}" = "ivar" ]; then
+        qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%REF_DP\\t]\\t[%ALT_DP\\t]\\n'
+    else
+        qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%AD\\t]\\n'
+    fi
+    bcftools query \\
+        -H -f "$qfmt" \\
+        "$vcf" \\
+        > bcftools_query_additional/${s}.bcftools_query.txt
+done
+for csv in {input[4]}; do
+    ln -sf "$PWD/$csv" pangolin_additional/
+done
+python scripts/make_variants_long_table.py \\
+    --bcftools_query_dir ./bcftools_query_additional \\
+    --snpsift_dir ./snpsift_additional \\
+    --pangolin_dir ./pangolin_additional \\
+    --variant_caller {config.variant_caller} \\
+    --output_file additional_variants_long_table.csv
+[ -f additional_variants_long_table.csv ] || printf "SAMPLE\\n" > additional_variants_long_table.csv
+mv additional_variants_long_table.csv {output[0]}
 """
 
 [rules.resources]
@@ -1597,12 +2421,13 @@ output = [
     "assembly/spades/rnaviral/{sample}.assembly.gfa.gz",
     "assembly/spades/rnaviral/{sample}.spades.log",
 ]
-# Upstream defaults to assemblers='spades' (rnaviral mode). The unicycler and
-# minia assembler branches are excluded from this port (see README fidelity
-# table); spades is the only assembler available here. The upstream
-# SPADES ext.args '--${params.spades_mode}' is honored via config.spades_mode.
+# Upstream defaults to assemblers='spades' (rnaviral mode) and runs each
+# assembler subworkflow when '<name>' is in the assemblers list; the port's
+# when-language has no 'in' operator, so assemblers takes ONE name and each
+# assembler branch is gated on equality. The upstream SPADES ext.args
+# '--${params.spades_mode}' is honored via config.spades_mode.
 description = "De novo assembly with SPAdes (upstream SPADES, --{config.spades_mode})"
-when = "!config.skip_assembly"
+when = "!config.skip_assembly && config.assemblers == 'spades'"
 shell = """
 wd=$(pwd)
 mkdir -p assembly/spades/rnaviral
@@ -1665,7 +2490,7 @@ output = [
     "assembly/spades/rnaviral/bandage/{sample}.svg",
 ]
 description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in)"
-when = "!config.skip_assembly && !config.skip_bandage"
+when = "!config.skip_assembly && !config.skip_bandage && config.assemblers == 'spades'"
 shell = """
 mkdir -p assembly/spades/rnaviral/bandage
 # Bandage 0.9.0 reads graphs with plain QFile and detects GFA by first-line
@@ -1699,7 +2524,7 @@ output = [
     "assembly/spades/rnaviral/blastn/{sample}.filter.blastn.txt",
 ]
 description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN)"
-when = "!config.skip_assembly && !config.skip_blast"
+when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'spades'"
 shell = """
 mkdir -p assembly/spades/rnaviral/blastn
 gzip -c -d {input[0]} > {sample}.scaffolds.fa
@@ -1733,7 +2558,7 @@ output = [
     "assembly/spades/rnaviral/quast.spades.tsv",
 ]
 description = "Assembly QC with QUAST (upstream QUAST, assembly branch)"
-when = "!config.skip_assembly && !config.skip_assembly_quast"
+when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'spades'"
 depends_on = ["assemble_spades"]
 shell = """
 mkdir -p quast_inputs
@@ -1772,7 +2597,7 @@ output = [
     "assembly/spades/rnaviral/abacas/{sample}.abacas.unused.contigs.out",
 ]
 description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS)"
-when = "!config.skip_assembly && !config.skip_abacas"
+when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'spades'"
 shell = """
 mkdir -p assembly/spades/rnaviral/abacas
 gzip -cd {input[0]} > {sample}.scaffolds.fa
@@ -1797,6 +2622,361 @@ time_limit = "8h"
 [rules.environment]
 conda = "envs/abacas.yaml"
 
+[[rules]]
+name = "assemble_unicycler"
+input = ["assembly/cutadapt/{sample}_1.trim.fastq.gz", "assembly/cutadapt/{sample}_2.trim.fastq.gz"]
+output = [
+    "assembly/unicycler/{sample}.scaffolds.fa.gz",
+    "assembly/unicycler/{sample}.assembly.gfa.gz",
+    "assembly/unicycler/{sample}.unicycler.log",
+]
+description = "De novo assembly with Unicycler (upstream UNICYCLER, process_high label)"
+when = "!config.skip_assembly && config.assemblers == 'unicycler'"
+shell = """
+wd=$(pwd)
+mkdir -p assembly/unicycler
+# per-sample scratch: unicycler writes generic-named files in its workdir
+mkdir -p .tmp/unicycler_{sample} && cd .tmp/unicycler_{sample}
+unicycler \\
+    --threads {threads} \\
+    -1 "$wd/{input[0]}" \\
+    -2 "$wd/{input[1]}" \\
+    --out ./
+[ $? -eq 0 ] || { echo "unicycler failed for {sample}" 1>&2; exit 1; }
+# upstream filters empty scaffolds/gfa out of the channels; the port emits
+# empty artifacts instead (documented runtime-filter deviation)
+[ -f assembly.fasta ] && mv assembly.fasta {sample}.scaffolds.fa || : > {sample}.scaffolds.fa
+gzip -n {sample}.scaffolds.fa
+mv {sample}.scaffolds.fa.gz "$wd/{output[0]}"
+[ -f assembly.gfa ] && mv assembly.gfa {sample}.assembly.gfa || : > {sample}.assembly.gfa
+gzip -n {sample}.assembly.gfa
+mv {sample}.assembly.gfa.gz "$wd/{output[1]}"
+[ -f unicycler.log ] && mv unicycler.log {sample}.unicycler.log || : > {sample}.unicycler.log
+mv {sample}.unicycler.log "$wd/{output[2]}"
+cd "$wd"
+rm -rf .tmp/unicycler_{sample}
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/unicycler.yaml"
+
+[[rules]]
+name = "bandage_unicycler"
+input = ["assembly/unicycler/{sample}.assembly.gfa.gz"]
+output = [
+    "assembly/unicycler/bandage/{sample}.png",
+    "assembly/unicycler/bandage/{sample}.svg",
+]
+description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in, unicycler branch)"
+when = "!config.skip_assembly && !config.skip_bandage && config.assemblers == 'unicycler'"
+shell = """
+mkdir -p assembly/unicycler/bandage
+gzip -cd {input[0]} > {sample}.assembly.gfa
+Bandage image {sample}.assembly.gfa {output[0]} --height 1000
+Bandage image {sample}.assembly.gfa {output[1]} --height 1000
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/bandage.yaml"
+
+[[rules]]
+name = "blast_assembly_unicycler"
+input = [
+    "assembly/unicycler/{sample}.scaffolds.fa.gz",
+    "reference/blastdb/genome.fa.nin",
+    "reference/blastdb/genome.fa.nsq",
+    "reference/blastdb/genome.fa.nhr",
+    "scripts/blast_outfmt6_header.txt",
+    "scripts/blast_filtered_outfmt6_header.txt",
+]
+output = [
+    "assembly/unicycler/blastn/{sample}.results.blastn.txt",
+    "assembly/unicycler/blastn/{sample}.filter.blastn.txt",
+]
+description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN, unicycler branch)"
+when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'unicycler'"
+shell = """
+mkdir -p assembly/unicycler/blastn
+gzip -c -d {input[0]} > {sample}.scaffolds.fa
+DB=`find -L reference/blastdb -name "*.nin" | sed 's/\\.nin$//'`
+[ -z "$DB" ] && DB=`find -L reference/blastdb -name "*.nal" | sed 's/\\.nal$//'`
+echo Using $DB
+blastn \\
+    -num_threads {threads} \\
+    -db $DB \\
+    -query {sample}.scaffolds.fa \\
+    -outfmt '6 stitle staxids std slen qlen qcovs' \\
+    -out {sample}.blastn.txt
+cat {input[4]} {sample}.blastn.txt > {output[0]}
+awk 'BEGIN{OFS="\\t";FS="\\t"}{print $0,$6/$16,$6/$15}' {sample}.blastn.txt | awk 'BEGIN{OFS="\\t";FS="\\t"} $16 > {config.min_contig_length} && $18 > {config.min_perc_contig_aligned} && $1 !~ /phage/ {print $0}' > tmp.out
+cat {input[5]} tmp.out > {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/blast.yaml"
+
+[[rules]]
+name = "quast_assembly_unicycler"
+input = ["assembly/unicycler/*.scaffolds.fa.gz", "reference/genome.fa", "reference/genome.gff"]
+output = [
+    "assembly/unicycler/quast.unicycler",
+    "assembly/unicycler/quast.unicycler.tsv",
+]
+description = "Assembly QC with QUAST (upstream QUAST, unicycler branch)"
+when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'unicycler'"
+depends_on = ["assemble_unicycler"]
+shell = """
+mkdir -p quast_inputs
+for f in {input[0]}; do
+    gzip -cd "$f" > "quast_inputs/$(basename "$f" .fa.gz).fa"
+done
+quast.py \\
+    --output-dir {output[0]} \\
+    -r {input[1]} \\
+    --features {input[2]} \\
+    --threads {threads} \\
+    quast_inputs/*.fa
+# a real copy, not a symlink: the engine's output validation does not
+# accept symlinked outputs (live: the valid symlink still failed
+# validation), and -f guards the resumption residue
+rm -f {output[1]}
+cp {output[0]}/report.tsv {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/quast.yaml"
+
+[[rules]]
+name = "abacas_unicycler"
+input = ["assembly/unicycler/{sample}.scaffolds.fa.gz", "reference/genome.fa"]
+output = [
+    "assembly/unicycler/abacas/{sample}.abacas.bin",
+    "assembly/unicycler/abacas/{sample}.abacas.nucmer.delta",
+    "assembly/unicycler/abacas/{sample}.abacas.nucmer.filtered.delta",
+    "assembly/unicycler/abacas/{sample}.abacas.nucmer.tiling",
+    "assembly/unicycler/abacas/{sample}.abacas.unused.contigs.out",
+]
+description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS, unicycler branch)"
+when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'unicycler'"
+shell = """
+mkdir -p assembly/unicycler/abacas
+gzip -cd {input[0]} > {sample}.scaffolds.fa
+abacas.pl \\
+    -r {input[1]} \\
+    -q {sample}.scaffolds.fa \\
+    -m -p nucmer \\
+    -o {sample}.abacas
+sort "{sample}.abacas.bin" > "{sample}.abacas.bin.tmp" && mv "{sample}.abacas.bin.tmp" "{sample}.abacas.bin"
+mv {sample}.abacas.bin {output[0]}
+mv nucmer.delta {output[1]}
+mv nucmer.filtered.delta {output[2]}
+mv nucmer.tiling {output[3]}
+mv unused_contigs.out {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/abacas.yaml"
+
+[[rules]]
+name = "assemble_minia"
+input = ["assembly/cutadapt/{sample}_1.trim.fastq.gz", "assembly/cutadapt/{sample}_2.trim.fastq.gz"]
+output = [
+    "assembly/minia/{sample}.contigs.fa",
+    "assembly/minia/{sample}.unitigs.fa",
+    "assembly/minia/{sample}.h5",
+]
+description = "De novo assembly with minia (upstream MINIA, process_high label)"
+when = "!config.skip_assembly && config.assemblers == 'minia'"
+shell = """
+mkdir -p assembly/minia
+# minia reads a list of input files (upstream module: reads joined by ',')
+echo "{input[0]}" > input_files.txt
+echo "{input[1]}" >> input_files.txt
+minia \\
+    -kmer-size 31 -abundance-min 20 \\
+    -nb-cores {threads} \\
+    -in input_files.txt \\
+    -out {sample}
+[ $? -eq 0 ] || { echo "minia failed for {sample}" 1>&2; exit 1; }
+# upstream filters empty contig files out of the channels; the port emits
+# empty artifacts instead (documented runtime-filter deviation)
+[ -f {sample}.contigs.fa ] || : > {sample}.contigs.fa
+mv {sample}.contigs.fa {output[0]}
+mv {sample}.unitigs.fa {output[1]}
+mv {sample}.h5 {output[2]}
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/minia.yaml"
+
+[[rules]]
+name = "blast_assembly_minia"
+input = [
+    "assembly/minia/{sample}.contigs.fa",
+    "reference/blastdb/genome.fa.nin",
+    "reference/blastdb/genome.fa.nsq",
+    "reference/blastdb/genome.fa.nhr",
+    "scripts/blast_outfmt6_header.txt",
+    "scripts/blast_filtered_outfmt6_header.txt",
+]
+output = [
+    "assembly/minia/blastn/{sample}.results.blastn.txt",
+    "assembly/minia/blastn/{sample}.filter.blastn.txt",
+]
+description = "BLAST the assembly contigs and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN, minia branch)"
+when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'minia'"
+shell = """
+mkdir -p assembly/minia/blastn
+DB=`find -L reference/blastdb -name "*.nin" | sed 's/\\.nin$//'`
+[ -z "$DB" ] && DB=`find -L reference/blastdb -name "*.nal" | sed 's/\\.nal$//'`
+echo Using $DB
+blastn \\
+    -num_threads {threads} \\
+    -db $DB \\
+    -query {input[0]} \\
+    -outfmt '6 stitle staxids std slen qlen qcovs' \\
+    -out {sample}.blastn.txt
+cat {input[4]} {sample}.blastn.txt > {output[0]}
+awk 'BEGIN{OFS="\\t";FS="\\t"}{print $0,$6/$16,$6/$15}' {sample}.blastn.txt | awk 'BEGIN{OFS="\\t";FS="\\t"} $16 > {config.min_contig_length} && $18 > {config.min_perc_contig_aligned} && $1 !~ /phage/ {print $0}' > tmp.out
+cat {input[5]} tmp.out > {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/blast.yaml"
+
+[[rules]]
+name = "quast_assembly_minia"
+input = ["assembly/minia/*.contigs.fa", "reference/genome.fa", "reference/genome.gff"]
+output = [
+    "assembly/minia/quast.minia",
+    "assembly/minia/quast.minia.tsv",
+]
+description = "Assembly QC with QUAST (upstream QUAST, minia branch)"
+when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'minia'"
+depends_on = ["assemble_minia"]
+shell = """
+quast.py \\
+    --output-dir {output[0]} \\
+    -r {input[1]} \\
+    --features {input[2]} \\
+    --threads {threads} \\
+    {input[0]}
+# a real copy, not a symlink: the engine's output validation does not
+# accept symlinked outputs (live: the valid symlink still failed
+# validation), and -f guards the resumption residue
+rm -f {output[1]}
+cp {output[0]}/report.tsv {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/quast.yaml"
+
+[[rules]]
+name = "abacas_minia"
+input = ["assembly/minia/{sample}.contigs.fa", "reference/genome.fa"]
+output = [
+    "assembly/minia/abacas/{sample}.abacas.bin",
+    "assembly/minia/abacas/{sample}.abacas.nucmer.delta",
+    "assembly/minia/abacas/{sample}.abacas.nucmer.filtered.delta",
+    "assembly/minia/abacas/{sample}.abacas.nucmer.tiling",
+    "assembly/minia/abacas/{sample}.abacas.unused.contigs.out",
+]
+description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS, minia branch)"
+when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'minia'"
+shell = """
+mkdir -p assembly/minia/abacas
+abacas.pl \\
+    -r {input[1]} \\
+    -q {input[0]} \\
+    -m -p nucmer \\
+    -o {sample}.abacas
+sort "{sample}.abacas.bin" > "{sample}.abacas.bin.tmp" && mv "{sample}.abacas.bin.tmp" "{sample}.abacas.bin"
+mv {sample}.abacas.bin {output[0]}
+mv nucmer.delta {output[1]}
+mv nucmer.filtered.delta {output[2]}
+mv nucmer.tiling {output[3]}
+mv unused_contigs.out {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/abacas.yaml"
+
+[[rules]]
+name = "plasmidid"
+input = ["assembly/spades/rnaviral/{sample}.scaffolds.fa.gz", "reference/genome.fa"]
+output = ["assembly/spades/rnaviral/plasmidid/{sample}"]
+description = "Reconstruct plasmid sequences from the assembly (upstream PLASMIDID, spades branch)"
+# upstream PLASMIDID runs in ASSEMBLY_QC for every assembler; the port's
+# assemblers key takes one name, so this rule serves the default spades
+# branch. plasmidID downloads NO database — it only needs the reference
+# fasta (-d) and the assembly scaffolds.
+when = "!config.skip_assembly && !config.skip_plasmidid && config.assemblers == 'spades'"
+shell = """
+mkdir -p assembly/spades/rnaviral/plasmidid
+gzip -cd {input[0]} > {sample}.scaffolds.fa
+plasmidID \\
+    -d {input[1]} \\
+    -s {sample} \\
+    -c {sample}.scaffolds.fa \\
+    --only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 \\
+    -o .
+mv NO_GROUP/{sample} assembly/spades/rnaviral/plasmidid/{sample}
+rm -rf NO_GROUP
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/plasmidid.yaml"
+
 # ---------------------------------------------------------------------------
 # 11. MultiQC (upstream MULTIQC + multiqc_to_custom_csv.py)
 # ---------------------------------------------------------------------------
@@ -1814,6 +2994,8 @@ expand_inputs = [
     { pattern = "variants/bowtie2/log/{sample}.bowtie2.log", variables = { sample = "config.samples_list" } },
     { pattern = "variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
     { pattern = "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
+    # upstream mixes BAM_MARKDUPLICATES_PICARD.out.flagstat into ch_multiqc_files
+    { pattern = "variants/bowtie2/samtools_stats/{sample}.markduplicates.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
     { pattern = "variants/bowtie2/picard_metrics/{sample}.CollectMultipleMetrics.alignment_summary_metrics", variables = { sample = "config.samples_list" } },
     # mosdepth inputs mirror upstream ch_multiqc_files: the genome global.dist.txt
     # (distribution plots) plus the amplicon all_samples coverage tsv (heatmap).
@@ -1837,6 +3019,8 @@ expand_inputs = [
     { pattern = "variants/ivar/consensus/bcftools/nextclade/nextclade_clade_mqc.tsv", variables = {} },
     { pattern = "assembly/cutadapt/log/{sample}.primer_trim.cutadapt.log", variables = { sample = "config.samples_list" } },
     { pattern = "assembly/spades/rnaviral/quast.spades", variables = {} },
+    { pattern = "assembly/unicycler/quast.unicycler", variables = {} },
+    { pattern = "assembly/minia/quast.minia", variables = {} },
     { pattern = "variants/ivar/consensus/bcftools/quast.consensus", variables = {} },
 ]
 output = [

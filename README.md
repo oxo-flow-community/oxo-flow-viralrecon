@@ -176,7 +176,7 @@ to it in this port:
 | IVAR_TRIM | `ivar_trim` | `-m 30 -q 20 -e` (noprimer-gated), optional `-x offset`, log captured; gated amplicon |
 | BAM_SORT_STATS_SAMTOOLS | `bam_sort_index_trimmed` | merged: `samtools cat` (single input, dropped) → sort → index → stats/flagstat/idxstats |
 | (align branch) | `bam_sort_index` | same merged trio for the untrimmed BAM |
-| PICARD_MARKDUPLICATES | — | excluded: `skip_markduplicates=true` by default |
+| PICARD_MARKDUPLICATES | `markduplicates` / `markduplicates_wgs` | gated `skip_markduplicates=false`; `--ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT --TMP_DIR tmp` + `REMOVE_DUPLICATES=true` when `filter_duplicates`; samtools index + stats/flagstat/idxstats; upstream replaces `ch_bam` with the marked BAM, the port keeps the pre-dedup BAM in the pipeline and publishes the marked BAM alongside (see deviations) |
 | PICARD_COLLECTMULTIPLEMETRICS | `picard_metrics` | `-Xmx4800M` (= 6 GB task × 0.8), LENIENT, `--TMP_DIR tmp`, all 5 metric files + pdf |
 | MOSDEPTH_AMPLICON | `mosdepth_amplicon` | `--fast-mode --use-median --thresholds 0,1,10,50,100,500 --by collapsed.bed` |
 | MOSDEPTH_GENOME | `mosdepth_genome` | `--fast-mode --by 200` |
@@ -188,11 +188,13 @@ to it in this port:
 | IVAR_VARIANTS_TO_VCF | `ivar_to_vcf` | `--ignore_strand_bias`, variant-counts log + header-cat MQC tsv |
 | BCFTOOLS_SORT | `sort_vcf` | `--output --temp-dir .` (default `--output-type z`); process_medium label (6c/36 GB/8 h) |
 | VCF_TABIX_STATS | `sort_vcf` | merged: tabix (`--threads -p vcf -f`) + `bcftools stats` |
+| VARIANTS_BCFTOOLS | `call_variants_bcftools` / `call_variants_bcftools_wgs` + `norm_vcf_bcftools` | gated `variant_caller='bcftools'`; mpileup (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 20`) \| `bcftools call` (`--ploidy 1 --multiallelic-caller`) \| reheader \| view `--include 'INFO/DP>=10'`, then `bcftools norm` (`--do-not-normalize --multiallelics -any`) merged with tabix + `bcftools stats` (VCF_TABIX_STATS); canonical `variants/ivar/` VCF paths shared with the ivar caller — 3.0.0 has no BCFTOOLS_MPILEUP_FILTER process, filtering lives in the BCFTOOLS_FILTER consensus-branch process |
 | SNPEFF_ANN | `snpeff_ann` | `-Xmx36g`, `-config/-dataDir` locals, `-csvStats`, summary html move |
 | VCF_BGZIP_TABIX_STATS | `snpeff_ann` | merged: bgzip + tabix + `bcftools stats` |
 | SNPSIFT_EXTRACTFIELDS | `snpsift_extract` | same ANN[*]/EFF[*] field list, `-s "," -e "."` |
-| BCFTOOLS_FILTER | `consensus_filter` | `--include 'FORMAT/ALT_FREQ >= 0.75'` |
+| BCFTOOLS_FILTER | `consensus_filter` / `consensus_filter_bcftools` | ivar-caller branch `--include 'FORMAT/ALT_FREQ >= 0.75'`; bcftools-caller branch `--include 'FORMAT/AD[:1] / FORMAT/DP >= 0.75'` (upstream ext.args, both filtered to the same canonical VCF) |
 | TABIX_TABIX | `consensus_filter` | merged |
+| IVAR_CONSENSUS (CONSENSUS_IVAR) | `consensus_ivar` / `consensus_ivar_wgs` | gated `consensus_caller='ivar'`; `samtools mpileup --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 -aa` \| `ivar consensus -t 0.75 -q 20 -m 10 -n N`; writes the canonical `consensus/bcftools/{sample}.consensus.fa` path so downstream consensus-QC rules are shared (see deviations) |
 | MAKE_BED_MASK | `consensus_call` | merged: mpileup `-a` + awk low-coverage (<10) positions + `make_bed_mask.py` |
 | BEDTOOLS_MERGE | `consensus_call` | merged |
 | BEDTOOLS_MASKFASTA | `consensus_call` | merged |
@@ -200,11 +202,14 @@ to it in this port:
 | RENAME_FASTA_HEADER | `consensus_call` | `sed "s/>/>{sample} /g"` (byte-identical to upstream) |
 | QUAST (consensus) | `quast_consensus` | `-r --features --threads`, report.tsv symlink; batch run over the whole cohort into one `quast.consensus/` dir — upstream runs one QUAST per sample (`ext.prefix` → per-sample dirs), so MultiQC shows one aggregated sample row here instead of per-sample rows (numeric results equivalent) |
 | PANGOLIN_RUN | `pangolin` | `XDG_CACHE_HOME=/tmp/.cache`, `--datadir --outfile --threads` |
+| PANGOLIN_UPDATEDATA | `pangolin_updatedata` + `pangolin_run_updated` | gated `pango_database=''`; `pangolin --update-data --datadir reference/pangolin_db` then the same PANGOLIN_RUN shell against the downloaded data |
 | NEXTCLADE_RUN | `nextclade` | `--jobs --input-dataset --output-all --output-basename` |
 | PLOT_BASE_DENSITY | `plot_base_density` | same script args, `base_qc/` outputs |
 | (channel code) | `nextclade_clade_mqc` | upstream builds `nextclade_clade_mqc.tsv` in Nextflow channel code (`getNextcladeFieldMapFromCsv` + `multiqcTsvFromList`); ported as an inline python gather over the per-sample CSVs |
 | BCFTOOLS_QUERY | `variants_long_table` | `-H -f '%CHROM\t%POS...'` per sample |
-| MAKE_VARIANTS_LONG_TABLE | `variants_long_table` | merged with query; symlink-collect pattern, `--variant_caller ivar` |
+| MAKE_VARIANTS_LONG_TABLE | `variants_long_table` / `variants_long_table_bcftools` | merged with query; symlink-collect pattern, `--variant_caller {config.variant_caller}`; bcftools-caller query reads the AD field (`[%AD\t]`), ivar query reads REF_DP/ALT_DP |
+| FREYJA_UPDATE | `freyja_update` + `freyja_demix_updated` / `freyja_boot_updated` | gated when `freyja_barcodes` or `freyja_lineages` is empty; `freyja update --outdir {config.freyja_db_name}` then the same demix/boot shells against the downloaded DB |
+| ADDITIONAL_ANNOTATION | `build_snpeff_db_additional` + `additional_annotation` | gated `additional_annotation` non-empty (off by default upstream); snpEff `-gff3` build of the extra annotation in a scratch dir, then per-sample snpEff ann + bgzip/tabix + SnpSift extract + query + `make_variants_long_table.py --variant_caller {config.variant_caller} --output_file additional_variants_long_table.csv` |
 | PREPARE_PRIMER_FASTA | `prepare_primer_fasta` | `sed -r '/^[ACTGactg]+$/ s/^/X/g'` |
 | CUTADAPT | `cutadapt` | `-Z --cores --overlap 5 --minimum-length 30 --error-rate 0.1 -g file: -G file:` |
 | FASTQC (assembly) | `fastqc_primers` | prefix `{sample}.primer_trim` via symlink rename |
@@ -214,6 +219,11 @@ to it in this port:
 | FILTER_BLASTN | `blast_assembly` | merged: awk `$16 > min_contig_length && $18 > min_perc_contig_aligned && $1 !~ /phage/` + header-cat |
 | QUAST (assembly) | `quast_assembly` | gunzip of scaffolds in shell, `quast.spades/` dir + tsv symlink; batch run over the whole cohort into one `quast.spades/` dir — upstream runs one QUAST per sample (per-sample `S1.spades/` dirs), so MultiQC shows one aggregated sample row here instead of per-sample rows (numeric results equivalent) |
 | ABACAS | `abacas` | `-m -p nucmer`, sorted `.bin`, nucmer delta/filtered/tiling + unused contigs moves |
+| UNICYCLER | `assemble_unicycler` | gated `assemblers='unicycler'`; `--threads` in a per-sample scratch dir (unicycler writes generic-named files), `mv assembly.fasta {sample}.scaffolds.fa` + gzip, `assembly.gfa` + log kept; BANDAGE/BLAST/QUAST/ABACAS QC chained as `bandage_unicycler` / `blast_assembly_unicycler` / `quast_assembly_unicycler` / `abacas_unicycler` |
+| MINIA | `assemble_minia` | gated `assemblers='minia'`; `-kmer-size 31 -abundance-min 20 -nb-cores {threads} -in input_files.txt`; BLAST/QUAST/ABACAS QC chained as `blast_assembly_minia` / `quast_assembly_minia` / `abacas_minia` (no Bandage: minia has no graph file, upstream runs Bandage only on the unicycler gfa) |
+| PLASMIDID | `plasmidid` | gated `skip_plasmidid=false`; `--only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 -d reference/genome.fa` — plasmidID needs no database download (verified: only the reference fasta) |
+| KRAKEN2_BUILD | `kraken2_build` | gated `kraken2_db=''`; `kraken2-build --download-taxonomy` + `--download-library {config.kraken2_db_name}` + `--build --threads` into `reference/kraken2_db` (upstream `params.kraken2_db_name`, default `human`) |
+| (metagenomic branch) | `mosdepth_genome_wgs` / `picard_metrics_wgs` / `freyja_variants_wgs` / `consensus_call_wgs` / `markduplicates_wgs` / `call_variants_bcftools_wgs` / `consensus_ivar_wgs` | gated `protocol='metagenomic'`; the same shells as their amplicon counterparts running on the untrimmed `sorted.bam`, writing the same canonical outputs (exclusive gates; upstream 3.0.0 protocol enum has no `wgs` value — the port maps the non-amplicon branch to `metagenomic` and calls it `wgs` in rule names) |
 | GUNZIP_FASTA/GFF/PRIMER_BED | `gunzip_fasta/gff/primer_bed` | gated on `*_ends_gz`; output to fixed `reference/` paths |
 | UNTAR_KRAKEN2_DB | `untar_kraken2_db` | upstream single-top-level-dir strip logic kept + upstream `ext.args2 --no-same-owner` on both tar invocations |
 | CUSTOM_GETCHROMSIZES | `prepare_genome` | `samtools faidx` + `cut -f 1,2` |
@@ -226,37 +236,97 @@ to it in this port:
 | MULTIQC | `multiqc` | both passes kept (parse pass + `-e general_stats --ignore *nextclade_clade_mqc.tsv` final pass), `grep -q ">skip_assembly<"` / `>skip_variants<` / `platform=illumina` rm rules, `multiqc_config_illumina.yml`; inputs mirror upstream `ch_multiqc_files` — snpeff `-csvStats` per-sample csv added (SnpEff section), mosdepth fed as genome `global.dist.txt` (distribution plots) + amplicon `all_samples.mosdepth.coverage.tsv` (heatmap), with the genome `summary.txt` additionally kept for the General Stats table (the inert genome coverage.tsv and amplicon per-sample summary.txt are not fed) |
 | multiqc_to_custom_csv.py | `multiqc` | merged, `--platform illumina` → `variants_metrics_mqc.csv` / `assembly_metrics_mqc.csv` |
 
-Excluded branches (not on the default path; see metadata.json for the full
-list): nanopore platform (ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/
-VCFLIB_VCFUNIQ), `variant_caller='bcftools'`, `consensus_caller='ivar'`,
-unicycler/minia assemblers, PICARD_MARKDUPLICATES, PLASMIDID, and the
-network-download processes KRAKEN2_BUILD / FREYJA_UPDATE / PANGOLIN_UPDATEDATA
-/ ADDITIONAL_ANNOTATION.
+Ported branches (all gated off by default, mirroring the upstream
+`params` defaults; the default run is byte-for-byte the amplicon ivar path):
+
+- `variant_caller='bcftools'` — VARIANTS_BCFTOOLS (`call_variants_bcftools`,
+  `norm_vcf_bcftools`), BCFTOOLS_FILTER (`consensus_filter_bcftools`) and the
+  bcftools long table (`variants_long_table_bcftools`); activates with
+  `--arg variant_caller=bcftools`, deactivating the ivar caller chain
+- `consensus_caller='ivar'` — CONSENSUS_IVAR (`consensus_ivar`) with
+  `--arg consensus_caller=ivar`
+- non-amplicon (shotgun / "wgs") protocol — `--arg protocol=metagenomic`;
+  the untrimmed-BAM counterparts `mosdepth_genome_wgs`, `picard_metrics_wgs`,
+  `freyja_variants_wgs`, `consensus_call_wgs`, `markduplicates_wgs`,
+  `call_variants_bcftools_wgs`, `consensus_ivar_wgs`; upstream defaults
+  `variant_caller='bcftools'` for non-amplicon runs, so a metagenomic run
+  should also pass `--arg variant_caller=bcftools` (see deviations)
+- unicycler / minia assemblers — `--arg assemblers=unicycler` /
+  `--arg assemblers=minia` with their full QC chains (Bandage only for
+  unicycler, matching upstream)
+- PICARD_MARKDUPLICATES — `--arg skip_markduplicates=false`
+- PLASMIDID — `--arg skip_plasmidid=false` (no database download; verified
+  upstream uses only the reference fasta)
+- network downloads — `kraken2_build` (leave `kraken2_db` empty),
+  `freyja_update` (leave `freyja_barcodes`/`freyja_lineages` empty),
+  `pangolin_updatedata` (leave `pango_database` empty)
+- ADDITIONAL_ANNOTATION — `--arg additional_annotation=path/to.gff`
+
+Still excluded (see metadata.json): the nanopore platform
+(ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ —
+guppybasecaller is a commercial ONT tool and no nanopore fixture exists),
+channel-level runtime filters, the `save_*` extra outputs, and the MultiQC
+`versions.yml`/plots extras. The port's `config.assemblers` takes ONE
+assembler name, not the upstream comma-separated list (see deviations).
 
 ### Documented deviations
 
 Everything below has no oxo-flow equivalent and is the closest faithful
 approximation; none silently change results:
 
-1. **Channel-level runtime filters are not ported.** The upstream
+0. **`config.assemblers` takes one name, not a comma list.** The upstream
+   `params.assemblers` is a comma-separated list and runs e.g. SPAdes AND
+   Unicycler in the same run. oxo-flow `when` conditions have no `in`/
+   contains operator, so each assembler branch is gated with an equality test
+   (`config.assemblers == 'spades' | 'unicycler' | 'minia'`) and a run is
+   single-assembler. (Negative equality gates were rejected as incorrect:
+   `!= 'spades'` would wrongly enable `minia` for `assemblers = 'spades,unicycler'`.)
+1. **Non-amplicon (metagenomic) runs need `variant_caller='bcftools'`.**
+   Upstream derives `variant_caller = params.variant_caller ?: (protocol=='amplicon' ? 'ivar' : 'bcftools')`.
+   The port keeps a static `variant_caller` default (`ivar`) and gates the
+   iVar variant-calling chain on the amplicon protocol, so a
+   `protocol='metagenomic'` run without `--arg variant_caller=bcftools` leaves
+   `consensus_call_wgs` without a producer for its filtered VCF (it fails
+   loudly on the missing input, mirroring nothing upstream would silently run).
+   The ivar caller itself is amplicon-only in 3.0.0's default wiring, but the
+   upstream metagenomic default is bcftools — the port keeps that behavior one
+   `--arg` away.
+
+2. **Channel-level runtime filters are not ported.** The upstream
    `process_trim_fastq` filter (drop samples with 0 reads after fastp), the
    `min_mapped_reads` flagstat gate before variant calling, the
    zero-variant-sample filter and optional-file existence gates run in
    Nextflow channel code, not in a process. `min_mapped_reads` still exists as
    config for documentation but has no effect. Rule shells run unconditioned
-   on their inputs.
-2. **Kraken2 host-filter routing.** When Kraken2 runs with
+   on their inputs. The gated assembler/consensus branches emit empty
+   placeholder artifacts where upstream would drop the sample from the channel
+   (`: > {sample}.scaffolds.fa` etc.).
+3. **MarkDuplicates does not replace `ch_bam`.** Upstream
+   `BAM_MARKDUPLICATES_PICARD` swaps `ch_bam` so mosdepth, picard metrics and
+   variant calling all consume the marked BAM. The port publishes the marked
+   BAM (bam/bai/stats/flagstat/idxstats/metrics) as standalone rules
+   (`markduplicates`, `markduplicates_wgs`) while the pipeline keeps the
+   pre-dedup BAM — the upstream module itself forbids same-name in/out, and a
+   canonical-path swap is impossible in oxo-flow (the rule would read and
+   write the same path).
+4. **Consensus paths are canonicalised across callers.** Upstream ivar
+   consensus publishes under `consensus/ivar/` and bcftools under
+   `consensus/bcftools/`. The port's ivar caller writes the canonical
+   `variants/ivar/consensus/bcftools/{sample}.consensus.fa` path so
+   QUAST/Pangolin/Nextclade/base-density/MultiQC rules are shared across
+   both callers with no duplicate outputs.
+5. **Kraken2 host-filter routing.** When Kraken2 runs with
    `kraken2_assembly_host_filter=false`, upstream routes the assembly branch
    to the fastp reads (channel wiring) while Kraken2 still writes its
    unclassified FASTQs. The port models this with the `assembly_fastq`
    passthrough rule, which overwrites the `kraken2/` unclassified paths with
    copies of the fastp reads (it runs after `kraken2` when both are active, so
    the content is deterministic).
-3. **`nextclade_clade_mqc.tsv`** is built by inline python instead of Nextflow
+6. **`nextclade_clade_mqc.tsv`** is built by inline python instead of Nextflow
    channel code (same input CSVs, same output columns).
-4. **`min_contig_length` / `min_perc_contig_aligned`** are used directly in the
+7. **`min_contig_length` / `min_perc_contig_aligned`** are used directly in the
    BLAST filter awk expression (upstream interpolates the same params).
-5. **Condensed environments.** Rules that merge several upstream processes
+8. **Condensed environments.** Rules that merge several upstream processes
    consolidate their conda envs. Exact pins are kept; only conflicts are
    resolved: `sed` 4.8 (cat/fastq, gunzip, untar) vs 4.9 (prepare_primer_fasta,
    filter_blastn, rename_fasta_header) → 4.8 in `coreutils.yaml`, 4.9 in
@@ -264,9 +334,9 @@ approximation; none silently change results:
    `consensus.yaml`; tabix's htslib 1.21 → 1.22.1 in `bcftools.yaml`;
    r-base 4.2 → 4.2.0 in `r.yaml`; mosdepth's build string
    `=0.3.11=h0ec343a_1` → `=0.3.11` for cross-platform resolution.
-6. **MultiQC extras** (`multiqc_data/versions.yml`, `*_plots` directory) are
+9. **MultiQC extras** (`multiqc_data/versions.yml`, `*_plots` directory) are
    not emitted; the report HTML, data directory and the two metrics CSVs are.
-7. **QUAST/ABACAS/Bandage inputs** gated by upstream `file(...)` existence
+10. **QUAST/ABACAS/Bandage inputs** gated by upstream `file(...)` existence
    checks (e.g. empty scaffolds) run unconditionally in the port; on the
    fixture and real data the files always exist.
 

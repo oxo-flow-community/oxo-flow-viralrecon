@@ -1,0 +1,7 @@
+# Environment for MINIA — pinned exactly to the upstream nf-core/minia module.
+name: minia
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::minia=3.2.6
