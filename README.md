@@ -118,7 +118,7 @@ Upstream `params.*` are `[config]` keys with identical defaults:
 | `raw_dir` / `out_dir` | `test/fixtures/raw` / `results` | samplesheet / `--outdir` |
 | `platform` / `protocol` | `illumina` / `amplicon` | `--platform` / `--protocol` |
 | `variant_caller` / `consensus_caller` | `ivar` / `bcftools` | `--variant_caller` / `--consensus_caller` |
-| `min_mapped_reads` | `1000` | `--min_mapped_reads` (see deviations) |
+| `min_mapped_reads` | `1000` | `--min_mapped_reads` (drop side is a deviation; the reporting half is ported — see deviations) |
 | `min_contig_length` / `min_perc_contig_aligned` | `200` / `0.7` | `--min_contig_length` / `--min_perc_contig_aligned` |
 | `assemblers` / `spades_mode` | `spades` / `rnaviral` | `--assemblers` / `--spades_mode` |
 | `primer_left_suffix` / `primer_right_suffix` | `_LEFT` / `_RIGHT` | `--primer_left_suffix` / `--primer_right_suffix` |
@@ -168,7 +168,7 @@ to it in this port:
 | --- | --- | --- |
 | CAT_FASTQ | `cat_fastq` | `cat` to `fastp/{sample}_{1,2}.fastq.gz` |
 | FASTQC_RAW | `fastqc_raw` | same args; upstream input-rename step kept (reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC so output names match), then renamed into `results/fastqc/raw/` |
-| FASTP | `fastp` | `ext.args` baked in verbatim (cut_front/cut_tail/trim_poly_x/cut_mean_quality 30/...) + `--detect_adapter_for_pe`, `2>| >(tee log >&2)` |
+| FASTP | `fastp` | `ext.args` baked in verbatim (cut_front/cut_tail/trim_poly_x/cut_mean_quality 30/...) + `--detect_adapter_for_pe`, `2>| >(tee log >&2)`; `save_trimmed_fail=true` adds upstream's `--failed_out {sample}.paired.fail.fastq.gz --unpaired1/2 {sample}_{1,2}.fail.fastq.gz` (off by default — empty placeholders) |
 | FASTQC_TRIM | `fastqc_trim` | same args; upstream input-rename step kept (trimmed reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC), then renamed into `results/fastqc/trim/` |
 | KRAKEN2_KRAKEN2 | `kraken2` | `--db` (local), `--report-zero-counts`, pigz of classified/unclassified pairs; gated on `skip_kraken2` |
 | (channel wiring) | `assembly_fastq` | passthrough of fastp reads to `kraken2/{sample}.unclassified_*.fastq.gz` when host filtering is off — replaces upstream `ch_assembly_fastq = ch_variants_fastq`; see deviations |
@@ -184,11 +184,11 @@ to it in this port:
 | FREYJA_VARIANTS | `freyja_variants` | `--ref --variants --depths` |
 | FREYJA_DEMIX | `freyja_demix` | `--output --barcodes --meta`, `--depthcutoff` when non-zero |
 | FREYJA_BOOT | `freyja_boot` | `--nt --nb {freyja_repeats} --boxplot pdf`, boot outputs renamed to `{sample}.lineages.csv` / `{sample}_summarized.csv` |
-| IVAR_VARIANTS | `call_variants_ivar` | `samtools mpileup` (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0`) \| `ivar variants -t 0.25 -q 20 -m 10 -g -r -p` |
+| IVAR_VARIANTS | `call_variants_ivar` | `samtools mpileup` (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0`) \| `ivar variants -t 0.25 -q 20 -m 10 -g -r -p`; `save_mpileup=true` tees the mpileup stream to `variants/ivar/{sample}.mpileup` (off by default — empty placeholder) |
 | IVAR_VARIANTS_TO_VCF | `ivar_to_vcf` | `--ignore_strand_bias`, variant-counts log + header-cat MQC tsv |
 | BCFTOOLS_SORT | `sort_vcf` | `--output --temp-dir .` (default `--output-type z`); process_medium label (6c/36 GB/8 h) |
 | VCF_TABIX_STATS | `sort_vcf` | merged: tabix (`--threads -p vcf -f`) + `bcftools stats` |
-| VARIANTS_BCFTOOLS | `call_variants_bcftools` / `call_variants_bcftools_wgs` + `norm_vcf_bcftools` | gated `variant_caller='bcftools'`; mpileup (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 20`) \| `bcftools call` (`--ploidy 1 --multiallelic-caller`) \| reheader \| view `--include 'INFO/DP>=10'`, then `bcftools norm` (`--do-not-normalize --multiallelics -any`) merged with tabix + `bcftools stats` (VCF_TABIX_STATS); canonical `variants/ivar/` VCF paths shared with the ivar caller — 3.0.0 has no BCFTOOLS_MPILEUP_FILTER process, filtering lives in the BCFTOOLS_FILTER consensus-branch process |
+| VARIANTS_BCFTOOLS | `call_variants_bcftools` / `call_variants_bcftools_wgs` + `norm_vcf_bcftools` | gated `variant_caller='bcftools'` (amplicon) or `protocol='metagenomic'` (auto, mirroring upstream's derived default — see deviations); mpileup (`--ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 20`) \| `bcftools call` (`--ploidy 1 --multiallelic-caller`) \| reheader \| view `--include 'INFO/DP>=10'`, then `bcftools norm` (`--do-not-normalize --multiallelics -any`) merged with tabix + `bcftools stats` (VCF_TABIX_STATS); canonical `variants/ivar/` VCF paths shared with the ivar caller — 3.0.0 has no BCFTOOLS_MPILEUP_FILTER process, filtering lives in the BCFTOOLS_FILTER consensus-branch process |
 | SNPEFF_ANN | `snpeff_ann` | `-Xmx36g`, `-config/-dataDir` locals, `-csvStats`, summary html move |
 | VCF_BGZIP_TABIX_STATS | `snpeff_ann` | merged: bgzip + tabix + `bcftools stats` |
 | SNPSIFT_EXTRACTFIELDS | `snpsift_extract` | same ANN[*]/EFF[*] field list, `-s "," -e "."` |
@@ -233,7 +233,7 @@ to it in this port:
 | NEXTCLADE_DATASETGET | `get_nextclade_dataset` | `--name sars-cov-2 --tag 2024-10-17--16-48-48Z` (v3pl tag of the MN908947.3 genome config); skips when a local `nextclade_dataset` path is set |
 | BLAST_MAKEBLASTDB | `make_blast_db` | `-parse_seqids -dbtype nucl` |
 | SNPEFF_BUILD | `build_snpeff_db` | `-Xmx12g`, `-gff3`, genomes/genome symlinks, `snpeff.config` echo |
-| MULTIQC | `multiqc` | both passes kept (parse pass + `-e general_stats --ignore *nextclade_clade_mqc.tsv` final pass), `grep -q ">skip_assembly<"` / `>skip_variants<` / `platform=illumina` rm rules, `multiqc_config_illumina.yml`; inputs mirror upstream `ch_multiqc_files` — snpeff `-csvStats` per-sample csv added (SnpEff section), mosdepth fed as genome `global.dist.txt` (distribution plots) + amplicon `all_samples.mosdepth.coverage.tsv` (heatmap), with the genome `summary.txt` additionally kept for the General Stats table (the inert genome coverage.tsv and amplicon per-sample summary.txt are not fed) |
+| MULTIQC | `multiqc` | both passes kept (parse pass + `-e general_stats --ignore *nextclade_clade_mqc.tsv` final pass), `grep -q ">skip_assembly<"` / `>skip_variants<` / `platform=illumina` rm rules, `multiqc_config_illumina.yml`; inputs mirror upstream `ch_multiqc_files` — snpeff `-csvStats` per-sample csv added (SnpEff section), mosdepth fed as genome `global.dist.txt` (distribution plots) + amplicon `all_samples.mosdepth.coverage.tsv` (heatmap), with the genome `summary.txt` additionally kept for the General Stats table (the inert genome coverage.tsv and amplicon per-sample summary.txt are not fed); the runtime-filter reporting half is ported (fail_mapped_reads_mqc.tsv / fail_mapped_samples_mqc.tsv custom content, same headers/rows as upstream `multiqcTsvFromList`, written only when samples fail) |
 | multiqc_to_custom_csv.py | `multiqc` | merged, `--platform illumina` → `variants_metrics_mqc.csv` / `assembly_metrics_mqc.csv` |
 
 Ported branches (all gated off by default, mirroring the upstream
@@ -248,9 +248,13 @@ Ported branches (all gated off by default, mirroring the upstream
 - non-amplicon (shotgun / "wgs") protocol — `--arg protocol=metagenomic`;
   the untrimmed-BAM counterparts `mosdepth_genome_wgs`, `picard_metrics_wgs`,
   `freyja_variants_wgs`, `consensus_call_wgs`, `markduplicates_wgs`,
-  `call_variants_bcftools_wgs`, `consensus_ivar_wgs`; upstream defaults
-  `variant_caller='bcftools'` for non-amplicon runs, so a metagenomic run
-  should also pass `--arg variant_caller=bcftools` (see deviations)
+  `call_variants_bcftools_wgs`, `consensus_ivar_wgs`; upstream derives
+  `variant_caller='bcftools'` for non-amplicon runs (nextflow.config), and the
+  port mirrors that derivation in the wgs rules' when conditions — a
+  metagenomic run needs no extra `--arg`, the bcftools caller chain
+  (`call_variants_bcftools_wgs`, `norm_vcf_bcftools`,
+  `consensus_filter_bcftools`, `variants_long_table_bcftools`) runs
+  automatically and the iVar caller chain stays amplicon-gated
 - unicycler / minia assemblers — `--arg assemblers=unicycler` /
   `--arg assemblers=minia` with their full QC chains (Bandage only for
   unicycler, matching upstream)
@@ -263,44 +267,39 @@ Ported branches (all gated off by default, mirroring the upstream
 - ADDITIONAL_ANNOTATION — `--arg additional_annotation=path/to.gff`
 
 Still excluded (see metadata.json): the nanopore platform
-(ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ —
-guppybasecaller is a commercial ONT tool and no nanopore fixture exists),
-channel-level runtime filters, the `save_*` extra outputs, and the MultiQC
-`versions.yml`/plots extras. The port's `config.assemblers` takes ONE
-assembler name, not the upstream comma-separated list (see deviations).
+(ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ — upstream
+wires per-barcode read channels with single-end meta flags, guppybasecaller
+is a commercial ONT tool and no nanopore fixture exists; structural) and the
+per-sample DROPS of the channel-level runtime filters (their reporting half
+is ported inside the multiqc rule — see deviations). The port's
+`config.assemblers` takes ONE assembler name, not the upstream
+comma-separated list (no `in`/contains operator in oxo-flow when-conditions,
+see deviations).
 
 ### Documented deviations
 
 Everything below has no oxo-flow equivalent and is the closest faithful
 approximation; none silently change results:
 
-0. **`config.assemblers` takes one name, not a comma list.** The upstream
+1. **`config.assemblers` takes one name, not a comma list.** The upstream
    `params.assemblers` is a comma-separated list and runs e.g. SPAdes AND
    Unicycler in the same run. oxo-flow `when` conditions have no `in`/
    contains operator, so each assembler branch is gated with an equality test
    (`config.assemblers == 'spades' | 'unicycler' | 'minia'`) and a run is
    single-assembler. (Negative equality gates were rejected as incorrect:
    `!= 'spades'` would wrongly enable `minia` for `assemblers = 'spades,unicycler'`.)
-1. **Non-amplicon (metagenomic) runs need `variant_caller='bcftools'`.**
-   Upstream derives `variant_caller = params.variant_caller ?: (protocol=='amplicon' ? 'ivar' : 'bcftools')`.
-   The port keeps a static `variant_caller` default (`ivar`) and gates the
-   iVar variant-calling chain on the amplicon protocol, so a
-   `protocol='metagenomic'` run without `--arg variant_caller=bcftools` leaves
-   `consensus_call_wgs` without a producer for its filtered VCF (it fails
-   loudly on the missing input, mirroring nothing upstream would silently run).
-   The ivar caller itself is amplicon-only in 3.0.0's default wiring, but the
-   upstream metagenomic default is bcftools — the port keeps that behavior one
-   `--arg` away.
-
-2. **Channel-level runtime filters are not ported.** The upstream
-   `process_trim_fastq` filter (drop samples with 0 reads after fastp), the
-   `min_mapped_reads` flagstat gate before variant calling, the
-   zero-variant-sample filter and optional-file existence gates run in
-   Nextflow channel code, not in a process. `min_mapped_reads` still exists as
-   config for documentation but has no effect. Rule shells run unconditioned
-   on their inputs. The gated assembler/consensus branches emit empty
-   placeholder artifacts where upstream would drop the sample from the channel
-   (`: > {sample}.scaffolds.fa` etc.).
+2. **The per-sample DROPS of the channel-level runtime filters are not
+   ported.** The upstream `process_trim_fastq` filter (drop samples with 0
+   reads after fastp), the `min_mapped_reads` flagstat gate before variant
+   calling and the zero-variant-sample filter run in Nextflow channel code,
+   not in a process — oxo-flow rules are all-or-nothing on their sample set,
+   so a sample cannot be dropped mid-DAG. The reporting half IS ported: the
+   multiqc rule regenerates upstream's custom-content TSVs
+   (`fail_mapped_reads_mqc.tsv` from the fastp JSONs, `fail_mapped_samples_mqc.tsv`
+   from the Bowtie2 flagstats, same headers/rows as `multiqcTsvFromList`),
+   written only when samples fail. `min_mapped_reads` config now feeds that
+   flagstat comparison. Placeholder artifacts (`: > {sample}.scaffolds.fa`
+   etc.) stand in where upstream would drop an empty assembly from the channel.
 3. **MarkDuplicates does not replace `ch_bam`.** Upstream
    `BAM_MARKDUPLICATES_PICARD` swaps `ch_bam` so mosdepth, picard metrics and
    variant calling all consume the marked BAM. The port publishes the marked
@@ -334,11 +333,23 @@ approximation; none silently change results:
    `consensus.yaml`; tabix's htslib 1.21 → 1.22.1 in `bcftools.yaml`;
    r-base 4.2 → 4.2.0 in `r.yaml`; mosdepth's build string
    `=0.3.11=h0ec343a_1` → `=0.3.11` for cross-platform resolution.
-9. **MultiQC extras** (`multiqc_data/versions.yml`, `*_plots` directory) are
-   not emitted; the report HTML, data directory and the two metrics CSVs are.
-10. **QUAST/ABACAS/Bandage inputs** gated by upstream `file(...)` existence
+9. **QUAST/ABACAS/Bandage inputs** gated by upstream `file(...)` existence
    checks (e.g. empty scaffolds) run unconditionally in the port; on the
    fixture and real data the files always exist.
+10. **`save_unaligned` / `save_reference` are effectively always on.** The
+    Kraken2 unclassified reads feed the assembly branch via upstream channel
+    wiring (not a publish gate), so they always land in `kraken2/`; the
+    reference files feed every rule and always publish. Both flags are kept as
+    config for documentation. (`save_ivar_trimmed_bam` does not exist at
+    3.0.0 — only `save_reference`, `save_trimmed_fail`, `save_unaligned` and
+    `save_mpileup` do; the latter two are now ported as in-rule switches.)
+11. **The upstream `multiqc_data/versions.yml` and `*_plots` outputs are not
+    emitted — at parity, not a deviation.** Verified at the pinned 3.0.0 tag:
+    the MULTIQC call receives no versions channel and the config has no
+    software_versions dict; MultiQC 1.31's search pattern for the software
+    table is `.+_mqc_versions\.(yaml|yml)` (plain `versions.yml` is not
+    picked up), and `export_plots` defaults false (flat threshold 2000), so
+    upstream emits neither artifact on its default path — matching the port.
 
 ### Resources
 

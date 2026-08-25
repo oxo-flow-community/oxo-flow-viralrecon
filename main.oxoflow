@@ -27,19 +27,24 @@
 #   upstream): bcftools variant calling (variant_caller='bcftools'),
 #   consensus with iVar (consensus_caller='ivar'), the metagenomic/wgs
 #   protocol (protocol='metagenomic'; upstream 3.0.0 has no 'wgs' protocol
-#   value), the unicycler and minia assemblers (assemblers='unicycler'/'minia'),
-#   Picard MarkDuplicates (skip_markduplicates=false), plasmidID
-#   (skip_plasmidid=false) and the network-download processes
-#   (KRAKEN2_BUILD when kraken2_db='', FREYJA_UPDATE when a freyja db path is
-#   empty, PANGOLIN_UPDATEDATA when pango_database=''). Branch rules that
-#   consume the same canonical outputs as the default path write to those
-#   same paths under mutually-exclusive gates (the engine accepts this).
+#   value; upstream derives variant_caller='bcftools' for non-amplicon runs
+#   and the port mirrors that in the wgs rules' when conditions, so a
+#   metagenomic run auto-runs the bcftools caller chain), the unicycler and
+#   minia assemblers (assemblers='unicycler'/'minia'), Picard MarkDuplicates
+#   (skip_markduplicates=false), plasmidID (skip_plasmidid=false) and the
+#   network-download processes (KRAKEN2_BUILD when kraken2_db='', FREYJA_UPDATE
+#   when a freyja db path is empty, PANGOLIN_UPDATEDATA when pango_database='').
+#   Branch rules that consume the same canonical outputs as the default path
+#   write to those same paths under mutually-exclusive gates (the engine
+#   accepts this).
 # - The nanopore platform branch (guppybasecaller, artic minion etc.) is not
 #   ported: guppybasecaller is a commercial ONT tool and no nanopore fixture
 #   exists; upstream workflows/nanopore are structurally distinct.
 # - Runtime channel filters (fastp "reads after filtering" check,
-#   min_mapped_reads gate, zero-variant-sample filter) have no oxo-flow
-#   equivalent and are documented in the fidelity table as deviations.
+#   min_mapped_reads gate, zero-variant-sample filter) have no oxo-flow DAG
+#   equivalent: the per-sample DROPS are documented deviations, while the
+#   reporting half (fail_mapped_reads_mqc.tsv / fail_mapped_samples_mqc.tsv)
+#   is ported inside the multiqc rule.
 
 [workflow]
 name = "oxo-flow-viralrecon"
@@ -97,16 +102,36 @@ platform = "illumina"
 protocol = "amplicon"
 # --- Variant calling (upstream params.variant_caller defaults to 'ivar' for
 #     the amplicon protocol and 'bcftools' otherwise; both branches are
-#     ported as when-gated rules) ---
+#     ported as when-gated rules). The metagenomic branch auto-runs the
+#     bcftools caller regardless of this key — upstream derives
+#     variant_caller in nextflow.config (params.variant_caller = protocol ==
+#     'metagenomic' ? 'bcftools' : 'ivar'), and the port mirrors that
+#     derivation in the wgs rules' when conditions, so a metagenomic run
+#     needs no extra --arg ---
 variant_caller = "ivar"
 # --- Consensus caller (upstream params.consensus_caller; both the bcftools
 #     and ivar branches are ported as when-gated rules) ---
 consensus_caller = "bcftools"
+# upstream params.min_mapped_reads — the per-sample channel DROP is a
+# documented runtime-filter deviation (no dynamic DAG); the reporting half
+# (fail_mapped_samples_mqc.tsv in the MultiQC data) is ported inside the
+# multiqc rule
 min_mapped_reads = 1000
 ivar_trim_noprimer = false
 ivar_trim_offset = ""
+# upstream params.save_mpileup — when true, call_variants_ivar tees the
+# samtools mpileup stream to variants/ivar/{sample}.mpileup (off by
+# default, exactly like upstream; the port emits an empty placeholder when
+# false so the declared output stays present)
 save_mpileup = false
+# upstream params.save_unaligned — NOT ported as a gate: the Kraken2
+# unclassified reads feed the assembly branch (upstream channel wiring),
+# so they always land in results/kraken2/ — the flag is effectively always
+# on in the port (benign over-emission vs upstream's default publish)
 save_unaligned = false
+# upstream params.save_trimmed_fail — when true, fastp keeps the
+# reads that failed filtering (--failed_out + --unpaired1/2); off by
+# default, exactly like upstream (empty placeholders when false)
 save_trimmed_fail = false
 # --- Consensus QC ---
 min_contig_length = 200
@@ -507,6 +532,9 @@ output = [
     "fastp/{sample}.fastp.json",
     "fastp/{sample}.fastp.html",
     "fastp/log/{sample}.fastp.log",
+    "fastp/{sample}.paired.fail.fastq.gz",
+    "fastp/{sample}_1.fail.fastq.gz",
+    "fastp/{sample}_2.fail.fastq.gz",
 ]
 description = "Adapter trimming with fastp (upstream FASTP, ext.args verbatim)"
 when = "!config.skip_fastp"
@@ -515,6 +543,17 @@ mkdir -p fastp fastp/log
 # Upstream symlinks the input reads to <prefix>_1/2.fastq.gz before trimming
 [ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
 [ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+# upstream params.save_trimmed_fail: --failed_out keeps reads that failed
+# filtering (paired) plus the unpaired mates; off by default (empty
+# placeholders keep the declared outputs present)
+if [ "{config.save_trimmed_fail}" = "true" ]; then
+    fail_args="--failed_out {output[5]} --unpaired1 {output[6]} --unpaired2 {output[7]}"
+else
+    gzip -c /dev/null > {output[5]}
+    gzip -c /dev/null > {output[6]}
+    gzip -c /dev/null > {output[7]}
+    fail_args=""
+fi
 fastp \\
     --in1 {sample}_1.fastq.gz \\
     --in2 {sample}_2.fastq.gz \\
@@ -522,6 +561,7 @@ fastp \\
     --out2 {output[1]} \\
     --json {output[2]} \\
     --html {output[3]} \\
+    $fail_args \\
     --thread {threads} \\
     --detect_adapter_for_pe \\
     --cut_front --cut_tail --trim_poly_x --cut_mean_quality 30 \\
@@ -1369,16 +1409,25 @@ conda = "envs/freyja.yaml"
 [[rules]]
 name = "call_variants_ivar"
 input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa", "reference/genome.gff"]
-output = ["variants/ivar/{sample}.tsv"]
+output = ["variants/ivar/{sample}.tsv", "variants/ivar/{sample}.mpileup"]
 description = "Call intrahost variants with iVar (upstream IVAR_VARIANTS)"
 when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/ivar
+# upstream params.save_mpileup: tee the mpileup stream to a file; off by
+# default (empty placeholder keeps the declared output present)
+if [ "{config.save_mpileup}" = "true" ]; then
+    mpileup_tee="| tee {output[1]}"
+else
+    : > {output[1]}
+    mpileup_tee=""
+fi
 samtools \\
     mpileup \\
     --ignore-overlaps --count-orphans --no-BAQ --max-depth 0 --min-BQ 0 \\
     --reference {input[1]} \\
     {input[0]} \\
+    $mpileup_tee \\
     | ivar \\
         variants \\
         -t 0.25 -q 20 -m 10 \\
@@ -1435,7 +1484,7 @@ name = "call_variants_bcftools_wgs"
 input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
 output = ["variants/ivar/{sample}.orig.vcf.gz"]
 description = "Call intrahost variants with bcftools on untrimmed reads (upstream BCFTOOLS_MPILEUP, metagenomic branch)"
-when = "!config.skip_variants && config.variant_caller == 'bcftools' && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && config.protocol == 'metagenomic'"
 shell = """
 mkdir -p variants/ivar
 echo "{sample}" > sample_name.list
@@ -1562,7 +1611,7 @@ description = "Split multi-allelic sites, sort, index and collect stats (upstrea
 # to the canonical variants/ivar/{sample}.sorted.vcf.gz so snpeff_ann,
 # consensus_filter_bcftools and variants_long_table_bcftools are shared with
 # the ivar-caller branch. Runs for both protocols (the orig vcf is canonical).
-when = "!config.skip_variants && config.variant_caller == 'bcftools'"
+when = "!config.skip_variants && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
 shell = """
 mkdir -p variants/ivar
 bcftools norm \\
@@ -1669,7 +1718,7 @@ output = [
     "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
 ]
 description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX, iVar-caller include)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1701,7 +1750,7 @@ description = "Filter variants by allele depth (upstream BCFTOOLS_FILTER + TABIX
 # write the same canonical filtered.vcf.gz consumed by consensus_call /
 # consensus_call_wgs (mutually-exclusive gates). No protocol gate: the
 # canonical sorted.vcf.gz exists for amplicon and metagenomic alike.
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'bcftools'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -2093,7 +2142,7 @@ output = ["variants/ivar/variants_long_table.csv"]
 description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, iVar-caller query format)"
 # upstream VARIANTS_LONG_TABLE runs for both protocols; the bcftools-caller
 # query format and long table live in variants_long_table_bcftools
-when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar'"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 depends_on = ["sort_vcf", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
@@ -2140,7 +2189,7 @@ input = [
 ]
 output = ["variants/ivar/variants_long_table.csv"]
 description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, bcftools-caller query format)"
-when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'bcftools'"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
 depends_on = ["norm_vcf_bcftools", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
@@ -3038,6 +3087,43 @@ mkdir -p multiqc_work {config.out_dir}/multiqc
 for f in {input}; do
     ln -sf "$PWD/$f" multiqc_work/
 done
+# Upstream's channel-level runtime filters are a documented deviation (the
+# per-sample DROPS have no oxo-flow equivalent); their reporting half is
+# ported here: the FAIL_READS (workflows/viralrecon.nf:262-294) and
+# min_mapped_reads (viralrecon.nf:342-366) custom-content TSVs, created
+# only when samples fail, with the same headers/rows as upstream
+# (multiqcTsvFromList, lib/WorkflowCommons.groovy:51-61).
+reads_before=""
+for json in multiqc_work/*.fastp.json; do
+    [ -f "$json" ] || continue
+    after=$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['summary']['after_filtering']['total_reads'])" "$json")
+    if [ "$after" = "0" ]; then
+        before=$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['summary']['before_filtering']['total_reads'])" "$json")
+        line=$(printf '%s\t%s' "$(basename "$json" .fastp.json)" "$before")
+        reads_before="$reads_before$line\n"
+    fi
+done
+if [ -n "$reads_before" ]; then
+    printf 'Sample\tReads before trimming\n' > multiqc_work/fail_mapped_reads_mqc.tsv
+    printf '%b' "$reads_before" >> multiqc_work/fail_mapped_reads_mqc.tsv
+fi
+mapped_samples=""
+for flagstat in multiqc_work/*.sorted.bam.flagstat; do
+    case "$flagstat" in
+        # upstream gates on FASTQ_ALIGN_BOWTIE2.out.flagstat only, not the
+        # ivar_trim / markduplicates variants
+        *.ivar_trim.sorted.bam.flagstat|*.markduplicates.sorted.bam.flagstat) continue ;;
+    esac
+    n=$(awk '/ mapped \\(/ {print $1; exit}' "$flagstat")
+    if [ -n "$n" ] && [ "$n" -le "{config.min_mapped_reads}" ]; then
+        line=$(printf '%s\t%s' "$(basename "$flagstat" .sorted.bam.flagstat)" "$n")
+        mapped_samples="$mapped_samples$line\n"
+    fi
+done
+if [ -n "$mapped_samples" ]; then
+    printf 'Sample\tMapped reads\n' > multiqc_work/fail_mapped_samples_mqc.tsv
+    printf '%b' "$mapped_samples" >> multiqc_work/fail_mapped_samples_mqc.tsv
+fi
 args=""
 [ -n "{config.multiqc_title}" ] && args="--title \\"{config.multiqc_title}\\""
 # First pass: parse tool logs and dump module YAMLs
