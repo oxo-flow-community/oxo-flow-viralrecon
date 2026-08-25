@@ -99,12 +99,9 @@
     "multiqc"
   ],
   "excluded": [
-    "nanopore platform branch (ARTIC_GUPPYPLEX, ARTIC_MINION, NANOPLOT, PYCOQC, VCFLIB_VCFUNIQ, PREPARE_GENOME_NANOPORE) — guppybasecaller is a commercial ONT tool and no nanopore fixture exists; illumina only",
-    "channel-level runtime filters — the fastp reads-after-filtering empty check, the min_mapped_reads flagstat gate, the zero-variant-sample filter and optional-file existence gates have no oxo-flow equivalent (documented deviations)",
-    "save_* extra outputs — save_unaligned, save_trimmed_fail, save_mpileup, save_ivar_trimmed_bam and the other save_* flags are off by default upstream and not ported",
-    "MultiQC extras — the multiqc_data/versions.yml software table and *_plots directory are not emitted; the port keeps the report HTML, the data directory and the variants/assembly metrics CSVs",
-    "multiple assemblers in one run — upstream params.assemblers is a comma-separated list; oxo-flow when-conditions have no in/contains operator, so the port gates each assembler with an equality test and runs one assembler at a time (--arg assemblers=spades|unicycler|minia)",
-    "iVar variant calling under the metagenomic protocol — upstream derives variant_caller='bcftools' for non-amplicon runs; the port's iVar caller chain is amplicon-gated, so metagenomic runs must pass --arg variant_caller=bcftools (documented deviation)"
+    "nanopore platform branch (ARTIC_GUPPYPLEX, ARTIC_MINION, NANOPLOT, PYCOQC, VCFLIB_VCFUNIQ, PREPARE_GENOME_NANOPORE) — upstream wires per-barcode read channels (fastq_dir + sequencing_summary) with single-end meta flags, guppybasecaller is a commercial ONT tool and no nanopore fixture exists; the port is paired-end Illumina only (structural)",
+    "channel-level runtime filters — the per-sample DROPS (fastp empty-after-filtering, the min_mapped_reads flagstat gate, the zero-variant-sample filter) have no oxo-flow DAG equivalent; the reporting half is ported inside the multiqc rule (fail_mapped_reads_mqc.tsv / fail_mapped_samples_mqc.tsv custom content, same headers/rows as upstream multiqcTsvFromList)",
+    "multiple assemblers in one run — upstream params.assemblers is a comma-separated list; oxo-flow when-conditions have no in/contains operator (==, !=, >=, <=, >, <, &&, ||, ! only), so the port gates each assembler with an equality test and runs one assembler at a time (--arg assemblers=spades|unicycler|minia)"
   ],
   "rule_count": 82,
   "tools": [
