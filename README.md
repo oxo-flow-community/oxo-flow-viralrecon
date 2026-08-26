@@ -10,7 +10,8 @@ genomics report: read QC and trimming (FastQC, fastp), host-sequence removal
 trimming (iVar), intrahost variant calling and annotation (iVar → snpEff /
 SnpSift), consensus building with low-coverage masking (bcftools), lineage
 assignment and deconvolution (Pangolin, Nextclade, Freyja), de novo assembly
-with QC (Cutadapt → SPAdes → Bandage / BLAST / QUAST / ABACAS), and a single
+with QC (Cutadapt → SPAdes / Unicycler / minia → Bandage / BLAST / QUAST /
+ABACAS / plasmidID — any comma-separated combination), and a single
 MultiQC report tying everything together. The repository ships a tiny
 end-to-end fixture (2 samples, 200 reads each, a 6 kb SARS-CoV-2-like
 reference, and stub Kraken2/Pangolin/Freyja databases) so the workflow can be
@@ -144,7 +145,11 @@ results/
 ├── variants/ivar/variants_long_table.csv
 ├── assembly/cutadapt/                  primer-trimmed reads, adapters.sub.fa, fastqc/
 ├── assembly/spades/rnaviral/           scaffolds/contigs/gfa (gzipped), bandage/,
-│                                       blastn/, quast.spades/, abacas/
+│                                       blastn/, quast.spades/, abacas/, plasmidid/
+├── assembly/unicycler/                 scaffolds/gfa (gzipped), bandage/, blastn/,
+│                                       quast.unicycler/, abacas/, plasmidid/
+├── assembly/minia/                     contigs/unitigs/h5, blastn/, quast.minia/,
+│                                       abacas/, plasmidid/
 └── multiqc/                            multiqc_report.html, multiqc_data/,
                                         variants_metrics_mqc.csv, assembly_metrics_mqc.csv
 ```
@@ -219,9 +224,9 @@ to it in this port:
 | FILTER_BLASTN | `blast_assembly` | merged: awk `$16 > min_contig_length && $18 > min_perc_contig_aligned && $1 !~ /phage/` + header-cat |
 | QUAST (assembly) | `quast_assembly` | gunzip of scaffolds in shell, `quast.spades/` dir + tsv symlink; batch run over the whole cohort into one `quast.spades/` dir — upstream runs one QUAST per sample (per-sample `S1.spades/` dirs), so MultiQC shows one aggregated sample row here instead of per-sample rows (numeric results equivalent) |
 | ABACAS | `abacas` | `-m -p nucmer`, sorted `.bin`, nucmer delta/filtered/tiling + unused contigs moves |
-| UNICYCLER | `assemble_unicycler` | gated `assemblers='unicycler'`; `--threads` in a per-sample scratch dir (unicycler writes generic-named files), `mv assembly.fasta {sample}.scaffolds.fa` + gzip, `assembly.gfa` + log kept; BANDAGE/BLAST/QUAST/ABACAS QC chained as `bandage_unicycler` / `blast_assembly_unicycler` / `quast_assembly_unicycler` / `abacas_unicycler` |
-| MINIA | `assemble_minia` | gated `assemblers='minia'`; `-kmer-size 31 -abundance-min 20 -nb-cores {threads} -in input_files.txt`; BLAST/QUAST/ABACAS QC chained as `blast_assembly_minia` / `quast_assembly_minia` / `abacas_minia` (no Bandage: minia has no graph file, upstream runs Bandage only on the unicycler gfa) |
-| PLASMIDID | `plasmidid` | gated `skip_plasmidid=false`; `--only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 -d reference/genome.fa` — plasmidID needs no database download (verified: only the reference fasta) |
+| UNICYCLER | `assemble_unicycler` | gated on `assemblers` containing `unicycler`; `--threads` in a per-sample scratch dir (unicycler writes generic-named files), `mv assembly.fasta {sample}.scaffolds.fa` + gzip, `assembly.gfa` + log kept; BANDAGE/BLAST/QUAST/ABACAS QC chained as `bandage_unicycler` / `blast_assembly_unicycler` / `quast_assembly_unicycler` / `abacas_unicycler` |
+| MINIA | `assemble_minia` | gated on `assemblers` containing `minia`; `-kmer-size 31 -abundance-min 20 -nb-cores {threads} -in input_files.txt`; BLAST/QUAST/ABACAS QC chained as `blast_assembly_minia` / `quast_assembly_minia` / `abacas_minia` (no Bandage: minia has no graph file, upstream runs Bandage only on the unicycler gfa) |
+| PLASMIDID | `plasmidid` / `plasmidid_unicycler` / `plasmidid_minia` | gated `skip_plasmidid=false`; one rule per assembler branch, mirroring upstream ASSEMBLY_QC; `--only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 -d reference/genome.fa` — plasmidID needs no database download (verified: only the reference fasta) |
 | KRAKEN2_BUILD | `kraken2_build` | gated `kraken2_db=''`; `kraken2-build --download-taxonomy` + `--download-library {config.kraken2_db_name}` + `--build --threads` into `reference/kraken2_db` (upstream `params.kraken2_db_name`, default `human`) |
 | (metagenomic branch) | `mosdepth_genome_wgs` / `picard_metrics_wgs` / `freyja_variants_wgs` / `consensus_call_wgs` / `markduplicates_wgs` / `call_variants_bcftools_wgs` / `consensus_ivar_wgs` | gated `protocol='metagenomic'`; the same shells as their amplicon counterparts running on the untrimmed `sorted.bam`, writing the same canonical outputs (exclusive gates; upstream 3.0.0 protocol enum has no `wgs` value — the port maps the non-amplicon branch to `metagenomic` and calls it `wgs` in rule names) |
 | GUNZIP_FASTA/GFF/PRIMER_BED | `gunzip_fasta/gff/primer_bed` | gated on `*_ends_gz`; output to fixed `reference/` paths |
@@ -255,9 +260,11 @@ Ported branches (all gated off by default, mirroring the upstream
   (`call_variants_bcftools_wgs`, `norm_vcf_bcftools`,
   `consensus_filter_bcftools`, `variants_long_table_bcftools`) runs
   automatically and the iVar caller chain stays amplicon-gated
-- unicycler / minia assemblers — `--arg assemblers=unicycler` /
-  `--arg assemblers=minia` with their full QC chains (Bandage only for
-  unicycler, matching upstream)
+- alternative assemblers — `--arg assemblers=unicycler` /
+  `--arg assemblers=minia` or any comma-separated combination
+  (`--arg assemblers=spades,unicycler` runs both in one run, like upstream)
+  with their full QC chains (Bandage for spades and unicycler, matching
+  upstream; plasmidID per assembler like upstream ASSEMBLY_QC)
 - PICARD_MARKDUPLICATES — `--arg skip_markduplicates=false`
 - PLASMIDID — `--arg skip_plasmidid=false` (no database download; verified
   upstream uses only the reference fasta)
@@ -271,23 +278,26 @@ Still excluded (see metadata.json): the nanopore platform
 wires per-barcode read channels with single-end meta flags, guppybasecaller
 is a commercial ONT tool and no nanopore fixture exists; structural) and the
 per-sample DROPS of the channel-level runtime filters (their reporting half
-is ported inside the multiqc rule — see deviations). The port's
-`config.assemblers` takes ONE assembler name, not the upstream
-comma-separated list (no `in`/contains operator in oxo-flow when-conditions,
-see deviations).
+is ported inside the multiqc rule — see deviations).
 
 ### Documented deviations
 
 Everything below has no oxo-flow equivalent and is the closest faithful
 approximation; none silently change results:
 
-1. **`config.assemblers` takes one name, not a comma list.** The upstream
-   `params.assemblers` is a comma-separated list and runs e.g. SPAdes AND
-   Unicycler in the same run. oxo-flow `when` conditions have no `in`/
-   contains operator, so each assembler branch is gated with an equality test
-   (`config.assemblers == 'spades' | 'unicycler' | 'minia'`) and a run is
-   single-assembler. (Negative equality gates were rejected as incorrect:
-   `!= 'spades'` would wrongly enable `minia` for `assemblers = 'spades,unicycler'`.)
+1. **`config.assemblers` is a comma-separated list in canonical lowercase
+   form (commas, no spaces).** The upstream `params.assemblers` accepts any
+   comma-separated combination — e.g. `spades,unicycler` runs SPAdes AND
+   Unicycler in the same run — trimming and lowercasing each entry. oxo-flow
+   `when` conditions have no `in`/contains operator, so the port enumerates
+   every combination of the three assemblers with explicit equality tests:
+   each assembler family (`assemble_*` plus its Bandage/BLAST/QUAST/ABACAS/
+   plasmidID QC chain) is gated on a disjunction of the four combinations
+   that contain it. Spelling the list with spaces (`spades, unicycler`) is
+   not accepted — upstream's trim is not reproducible without an `in`
+   operator. (Negative equality gates were rejected as incorrect:
+   `!= 'spades'` would wrongly enable `minia` for
+   `assemblers = 'spades,unicycler'`.)
 2. **The per-sample DROPS of the channel-level runtime filters are not
    ported.** The upstream `process_trim_fastq` filter (drop samples with 0
    reads after fastp), the `min_mapped_reads` flagstat gate before variant
