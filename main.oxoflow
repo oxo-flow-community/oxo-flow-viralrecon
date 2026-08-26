@@ -136,11 +136,11 @@ save_trimmed_fail = false
 # --- Consensus QC ---
 min_contig_length = 200
 min_perc_contig_aligned = 0.7
-# --- Assembly (upstream params.assemblers may list several assemblers; the
-#     port's when-language has no 'in' operator, so assemblers takes ONE
-#     name and the unicycler/minia branches are gated on equality:
-#     assemblers='spades' | 'unicycler' | 'minia'. Comma-separated lists are
-#     a documented deviation.) ---
+# --- Assembly (upstream params.assemblers is a comma-separated list, e.g.
+#     'spades,unicycler'; the port's when-language has no 'in' operator, so
+#     every combination of the three assemblers is enumerated with explicit
+#     equality tests. Give the canonical lowercase form, commas with no
+#     spaces: 'spades' | 'unicycler' | 'minia' | 'spades,unicycler' | ... ) ---
 assemblers = "spades"
 spades_mode = "rnaviral"
 # --- Primer trimming for assembly ---
@@ -2472,11 +2472,12 @@ output = [
 ]
 # Upstream defaults to assemblers='spades' (rnaviral mode) and runs each
 # assembler subworkflow when '<name>' is in the assemblers list; the port's
-# when-language has no 'in' operator, so assemblers takes ONE name and each
-# assembler branch is gated on equality. The upstream SPADES ext.args
+# when-language has no 'in' operator, so each assembler branch is gated on
+# explicit equality over every combination that contains it. The upstream
+# SPADES ext.args
 # '--${params.spades_mode}' is honored via config.spades_mode.
 description = "De novo assembly with SPAdes (upstream SPADES, --{config.spades_mode})"
-when = "!config.skip_assembly && config.assemblers == 'spades'"
+when = "!config.skip_assembly && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 wd=$(pwd)
 mkdir -p assembly/spades/rnaviral
@@ -2539,7 +2540,7 @@ output = [
     "assembly/spades/rnaviral/bandage/{sample}.svg",
 ]
 description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in)"
-when = "!config.skip_assembly && !config.skip_bandage && config.assemblers == 'spades'"
+when = "!config.skip_assembly && !config.skip_bandage && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/bandage
 # Bandage 0.9.0 reads graphs with plain QFile and detects GFA by first-line
@@ -2573,7 +2574,7 @@ output = [
     "assembly/spades/rnaviral/blastn/{sample}.filter.blastn.txt",
 ]
 description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN)"
-when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'spades'"
+when = "!config.skip_assembly && !config.skip_blast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/blastn
 gzip -c -d {input[0]} > {sample}.scaffolds.fa
@@ -2607,7 +2608,7 @@ output = [
     "assembly/spades/rnaviral/quast.spades.tsv",
 ]
 description = "Assembly QC with QUAST (upstream QUAST, assembly branch)"
-when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'spades'"
+when = "!config.skip_assembly && !config.skip_assembly_quast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 depends_on = ["assemble_spades"]
 shell = """
 mkdir -p quast_inputs
@@ -2646,7 +2647,7 @@ output = [
     "assembly/spades/rnaviral/abacas/{sample}.abacas.unused.contigs.out",
 ]
 description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS)"
-when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'spades'"
+when = "!config.skip_assembly && !config.skip_abacas && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/abacas
 gzip -cd {input[0]} > {sample}.scaffolds.fa
@@ -2680,7 +2681,7 @@ output = [
     "assembly/unicycler/{sample}.unicycler.log",
 ]
 description = "De novo assembly with Unicycler (upstream UNICYCLER, process_high label)"
-when = "!config.skip_assembly && config.assemblers == 'unicycler'"
+when = "!config.skip_assembly && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 wd=$(pwd)
 mkdir -p assembly/unicycler
@@ -2722,7 +2723,7 @@ output = [
     "assembly/unicycler/bandage/{sample}.svg",
 ]
 description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in, unicycler branch)"
-when = "!config.skip_assembly && !config.skip_bandage && config.assemblers == 'unicycler'"
+when = "!config.skip_assembly && !config.skip_bandage && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/unicycler/bandage
 gzip -cd {input[0]} > {sample}.assembly.gfa
@@ -2753,7 +2754,7 @@ output = [
     "assembly/unicycler/blastn/{sample}.filter.blastn.txt",
 ]
 description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN, unicycler branch)"
-when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'unicycler'"
+when = "!config.skip_assembly && !config.skip_blast && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/unicycler/blastn
 gzip -c -d {input[0]} > {sample}.scaffolds.fa
@@ -2787,7 +2788,7 @@ output = [
     "assembly/unicycler/quast.unicycler.tsv",
 ]
 description = "Assembly QC with QUAST (upstream QUAST, unicycler branch)"
-when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'unicycler'"
+when = "!config.skip_assembly && !config.skip_assembly_quast && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 depends_on = ["assemble_unicycler"]
 shell = """
 mkdir -p quast_inputs
@@ -2826,7 +2827,7 @@ output = [
     "assembly/unicycler/abacas/{sample}.abacas.unused.contigs.out",
 ]
 description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS, unicycler branch)"
-when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'unicycler'"
+when = "!config.skip_assembly && !config.skip_abacas && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/unicycler/abacas
 gzip -cd {input[0]} > {sample}.scaffolds.fa
@@ -2860,7 +2861,7 @@ output = [
     "assembly/minia/{sample}.h5",
 ]
 description = "De novo assembly with minia (upstream MINIA, process_high label)"
-when = "!config.skip_assembly && config.assemblers == 'minia'"
+when = "!config.skip_assembly && (config.assemblers == 'minia' || config.assemblers == 'spades,minia' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/minia
 # minia reads a list of input files (upstream module: reads joined by ',')
@@ -2903,7 +2904,7 @@ output = [
     "assembly/minia/blastn/{sample}.filter.blastn.txt",
 ]
 description = "BLAST the assembly contigs and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN, minia branch)"
-when = "!config.skip_assembly && !config.skip_blast && config.assemblers == 'minia'"
+when = "!config.skip_assembly && !config.skip_blast && (config.assemblers == 'minia' || config.assemblers == 'spades,minia' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/minia/blastn
 DB=`find -L reference/blastdb -name "*.nin" | sed 's/\\.nin$//'`
@@ -2936,7 +2937,7 @@ output = [
     "assembly/minia/quast.minia.tsv",
 ]
 description = "Assembly QC with QUAST (upstream QUAST, minia branch)"
-when = "!config.skip_assembly && !config.skip_assembly_quast && config.assemblers == 'minia'"
+when = "!config.skip_assembly && !config.skip_assembly_quast && (config.assemblers == 'minia' || config.assemblers == 'spades,minia' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 depends_on = ["assemble_minia"]
 shell = """
 quast.py \\
@@ -2971,7 +2972,7 @@ output = [
     "assembly/minia/abacas/{sample}.abacas.unused.contigs.out",
 ]
 description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS, minia branch)"
-when = "!config.skip_assembly && !config.skip_abacas && config.assemblers == 'minia'"
+when = "!config.skip_assembly && !config.skip_abacas && (config.assemblers == 'minia' || config.assemblers == 'spades,minia' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/minia/abacas
 abacas.pl \\
@@ -3000,11 +3001,11 @@ name = "plasmidid"
 input = ["assembly/spades/rnaviral/{sample}.scaffolds.fa.gz", "reference/genome.fa"]
 output = ["assembly/spades/rnaviral/plasmidid/{sample}"]
 description = "Reconstruct plasmid sequences from the assembly (upstream PLASMIDID, spades branch)"
-# upstream PLASMIDID runs in ASSEMBLY_QC for every assembler; the port's
-# assemblers key takes one name, so this rule serves the default spades
-# branch. plasmidID downloads NO database — it only needs the reference
-# fasta (-d) and the assembly scaffolds.
-when = "!config.skip_assembly && !config.skip_plasmidid && config.assemblers == 'spades'"
+# upstream PLASMIDID runs in ASSEMBLY_QC for every assembler; the port
+# mirrors that with one plasmidid rule per assembler branch (see
+# plasmidid_unicycler / plasmidid_minia). plasmidID downloads NO database
+# — it only needs the reference fasta (-d) and the assembly scaffolds.
+when = "!config.skip_assembly && !config.skip_plasmidid && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/plasmidid
 gzip -cd {input[0]} > {sample}.scaffolds.fa
@@ -3015,6 +3016,67 @@ plasmidID \\
     --only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 \\
     -o .
 mv NO_GROUP/{sample} assembly/spades/rnaviral/plasmidid/{sample}
+rm -rf NO_GROUP
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/plasmidid.yaml"
+
+[[rules]]
+name = "plasmidid_unicycler"
+input = ["assembly/unicycler/{sample}.scaffolds.fa.gz", "reference/genome.fa"]
+output = ["assembly/unicycler/plasmidid/{sample}"]
+description = "Reconstruct plasmid sequences from the assembly (upstream PLASMIDID, unicycler branch)"
+# upstream PLASMIDID runs in ASSEMBLY_QC for every assembler; the port
+# mirrors that with one plasmidid rule per assembler branch. plasmidID
+# downloads NO database — it only needs the reference fasta (-d) and the
+# assembly scaffolds (gunzipped here like upstream GUNZIP_SCAFFOLDS).
+when = "!config.skip_assembly && !config.skip_plasmidid && (config.assemblers == 'unicycler' || config.assemblers == 'spades,unicycler' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
+shell = """
+mkdir -p assembly/unicycler/plasmidid
+gzip -cd {input[0]} > {sample}.scaffolds.fa
+plasmidID \\
+    -d {input[1]} \\
+    -s {sample} \\
+    -c {sample}.scaffolds.fa \\
+    --only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 \\
+    -o .
+mv NO_GROUP/{sample} assembly/unicycler/plasmidid/{sample}
+rm -rf NO_GROUP
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/plasmidid.yaml"
+
+[[rules]]
+name = "plasmidid_minia"
+input = ["assembly/minia/{sample}.contigs.fa", "reference/genome.fa"]
+output = ["assembly/minia/plasmidid/{sample}"]
+description = "Reconstruct plasmid sequences from the assembly (upstream PLASMIDID, minia branch)"
+# upstream PLASMIDID runs in ASSEMBLY_QC for every assembler; the port
+# mirrors that with one plasmidid rule per assembler branch. plasmidID
+# downloads NO database — it only needs the reference fasta (-d) and the
+# assembly scaffolds (minia contigs are plain .fa, no gunzip needed).
+when = "!config.skip_assembly && !config.skip_plasmidid && (config.assemblers == 'minia' || config.assemblers == 'spades,minia' || config.assemblers == 'unicycler,minia' || config.assemblers == 'spades,unicycler,minia')"
+shell = """
+mkdir -p assembly/minia/plasmidid
+plasmidID \\
+    -d {input[1]} \\
+    -s {sample} \\
+    -c {input[0]} \\
+    --only-reconstruct -C 47 -S 47 -i 60 --no-trim -k 0.80 \\
+    -o .
+mv NO_GROUP/{sample} assembly/minia/plasmidid/{sample}
 rm -rf NO_GROUP
 """
 
