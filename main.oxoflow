@@ -51,7 +51,6 @@ name = "oxo-flow-viralrecon"
 version = "1.0.0"
 description = "Viral assembly and intrahost variant calling: FastQC, fastp trimming, Kraken2 host removal, Bowtie2 alignment, iVar primer trimming + variant calling, snpEff/SnpSift annotation, bcftools consensus, Pangolin/Nextclade lineage calling, SPAdes de novo assembly, MultiQC"
 author = "oxo-flow-community"
-sample_group_name = "cohort"
 
 [config]
 # --- Reference files (upstream --fasta / --gff / --primer_bed) ---
