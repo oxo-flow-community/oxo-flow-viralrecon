@@ -22,7 +22,8 @@ data to use it for real.
 
 ### 1. Install oxo-flow
 
-Requires oxo-flow >= 0.12.0.
+Requires oxo-flow >= 0.17.0 (the fastp empty-reads gates use the `when`
+runtime functions shipped in 0.17.0).
 
 Release binary (recommended):
 
@@ -120,6 +121,7 @@ Upstream `params.*` are `[config]` keys with identical defaults:
 | `platform` / `protocol` | `illumina` / `amplicon` | `--platform` / `--protocol` |
 | `variant_caller` / `consensus_caller` | `ivar` / `bcftools` | `--variant_caller` / `--consensus_caller` |
 | `min_mapped_reads` | `1000` | `--min_mapped_reads` (drop side is a deviation; the reporting half is ported — see deviations) |
+| `skip_fastp` | `false` | `--skip_fastp` (when `true` the fastp empty-reads drop is off, matching upstream) |
 | `min_contig_length` / `min_perc_contig_aligned` | `200` / `0.7` | `--min_contig_length` / `--min_perc_contig_aligned` |
 | `assemblers` / `spades_mode` | `spades` / `rnaviral` | `--assemblers` / `--spades_mode` |
 | `primer_left_suffix` / `primer_right_suffix` | `_LEFT` / `_RIGHT` | `--primer_left_suffix` / `--primer_right_suffix` |
@@ -175,9 +177,9 @@ to it in this port:
 | FASTQC_RAW | `fastqc_raw` | same args; upstream input-rename step kept (reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC so output names match), then renamed into `results/fastqc/raw/` |
 | FASTP | `fastp` | `ext.args` baked in verbatim (cut_front/cut_tail/trim_poly_x/cut_mean_quality 30/...) + `--detect_adapter_for_pe`, `2>| >(tee log >&2)`; `save_trimmed_fail=true` adds upstream's `--failed_out {sample}.paired.fail.fastq.gz --unpaired1/2 {sample}_{1,2}.fail.fastq.gz` (off by default — empty placeholders) |
 | FASTQC_TRIM | `fastqc_trim` | same args; upstream input-rename step kept (trimmed reads symlinked to `{sample}_{1,2}.fastq.gz` before FastQC), then renamed into `results/fastqc/trim/` |
-| KRAKEN2_KRAKEN2 | `kraken2` | `--db` (local), `--report-zero-counts`, pigz of classified/unclassified pairs; gated on `skip_kraken2` |
+| KRAKEN2_KRAKEN2 | `kraken2` | `--db` (local), `--report-zero-counts`, pigz of classified/unclassified pairs; gated on `skip_kraken2` + the fastp empty-reads drop (`reads_count(...) > 0` when-gate) |
 | (channel wiring) | `assembly_fastq` | passthrough of fastp reads to `kraken2/{sample}.unclassified_*.fastq.gz` when host filtering is off — replaces upstream `ch_assembly_fastq = ch_variants_fastq`; see deviations |
-| BOWTIE2_ALIGN | `align_bowtie2` | index found by `find -L` on `*.rev.1.bt2[l]`, `--local --very-sensitive-local --seed 1`, unmapped-filtered `samtools view -F4`, log tee'd |
+| BOWTIE2_ALIGN | `align_bowtie2` | index found by `find -L` on `*.rev.1.bt2[l]`, `--local --very-sensitive-local --seed 1`, unmapped-filtered `samtools view -F4`, log tee'd; carries the fastp empty-reads drop when-gate |
 | IVAR_TRIM | `ivar_trim` | `-m 30 -q 20 -e` (noprimer-gated), optional `-x offset`, log captured; gated amplicon |
 | BAM_SORT_STATS_SAMTOOLS | `bam_sort_index_trimmed` | merged: `samtools cat` (single input, dropped) → sort → index → stats/flagstat/idxstats |
 | (align branch) | `bam_sort_index` | same merged trio for the untrimmed BAM |
@@ -277,8 +279,9 @@ Still excluded (see metadata.json): the nanopore platform
 (ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ — upstream
 wires per-barcode read channels with single-end meta flags, guppybasecaller
 is a commercial ONT tool and no nanopore fixture exists; structural) and the
-per-sample DROPS of the channel-level runtime filters (their reporting half
-is ported inside the multiqc rule — see deviations).
+remaining runtime-filter DROPS — the `min_mapped_reads` flagstat gate and the
+zero-variant-sample filters (their reporting half is ported inside the
+multiqc rule — see deviations).
 
 ### Documented deviations
 
@@ -298,18 +301,26 @@ approximation; none silently change results:
    operator. (Negative equality gates were rejected as incorrect:
    `!= 'spades'` would wrongly enable `minia` for
    `assemblers = 'spades,unicycler'`.)
-2. **The per-sample DROPS of the channel-level runtime filters are not
-   ported.** The upstream `process_trim_fastq` filter (drop samples with 0
-   reads after fastp), the `min_mapped_reads` flagstat gate before variant
-   calling and the zero-variant-sample filter run in Nextflow channel code,
-   not in a process — oxo-flow rules are all-or-nothing on their sample set,
-   so a sample cannot be dropped mid-DAG. The reporting half IS ported: the
-   multiqc rule regenerates upstream's custom-content TSVs
+2. **Runtime-filter DROPS are partially ported (engine 0.17.0 `when`
+   runtime functions).** The upstream fastp filter (drop samples with 0
+   reads after trimming, wrapped in `if (!params.skip_fastp)`) IS ported:
+   the consumers of the trimmed reads (`kraken2`, `align_bowtie2`,
+   `assembly_fastq`) carry a
+   `!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0`
+   gate, matching upstream's per-sample channel drop with the same
+   short-circuit. The `min_mapped_reads` flagstat gate (a strict `>` on the
+   mapped count parsed out of samtools flagstat text) and the
+   zero-variant-sample filters still run in Nextflow channel code with no
+   engine equivalent — a sample cannot be dropped mid-DAG from a flagstat
+   regex or a `bcftools stats` record count. The reporting half IS ported:
+   the multiqc rule regenerates upstream's custom-content TSVs
    (`fail_mapped_reads_mqc.tsv` from the fastp JSONs, `fail_mapped_samples_mqc.tsv`
    from the Bowtie2 flagstats, same headers/rows as `multiqcTsvFromList`),
-   written only when samples fail. `min_mapped_reads` config now feeds that
+   written only when samples fail. `min_mapped_reads` config feeds that
    flagstat comparison. Placeholder artifacts (`: > {sample}.scaffolds.fa`
-   etc.) stand in where upstream would drop an empty assembly from the channel.
+   etc.) stand in where upstream would drop an empty assembly from the
+   channel; zero-variant samples keep flowing downstream with a
+   placeholder-header VCF (see `ivar_to_vcf`).
 3. **MarkDuplicates does not replace `ch_bam`.** Upstream
    `BAM_MARKDUPLICATES_PICARD` swaps `ch_bam` so mosdepth, picard metrics and
    variant calling all consume the marked BAM. The port publishes the marked
