@@ -40,9 +40,12 @@
 # - The nanopore platform branch (guppybasecaller, artic minion etc.) is not
 #   ported: guppybasecaller is a commercial ONT tool and no nanopore fixture
 #   exists; upstream workflows/nanopore are structurally distinct.
-# - Runtime channel filters (fastp "reads after filtering" check,
-#   min_mapped_reads gate, zero-variant-sample filter) have no oxo-flow DAG
-#   equivalent: the per-sample DROPS are documented deviations, while the
+# - Runtime channel filters, partially adopted (engine 0.17.0 `when`
+#   runtime functions): the fastp empty-after-filtering drop is ported as
+#   `reads_count(...) > 0` gates on the consumers of the trimmed reads
+#   (kraken2, align_bowtie2, assembly_fastq). The min_mapped_reads flagstat
+#   gate and the zero-variant-sample filters remain documented deviations
+#   (no engine runtime fn can read a flagstat/BCF-tools-stats count); the
 #   reporting half (fail_mapped_reads_mqc.tsv / fail_mapped_samples_mqc.tsv)
 #   is ported inside the multiqc rule.
 
@@ -112,7 +115,8 @@ variant_caller = "ivar"
 #     and ivar branches are ported as when-gated rules) ---
 consensus_caller = "bcftools"
 # upstream params.min_mapped_reads — the per-sample channel DROP is a
-# documented runtime-filter deviation (no dynamic DAG); the reporting half
+# documented runtime-filter deviation (no engine runtime fn can read the
+# mapped count out of a samtools flagstat); the reporting half
 # (fail_mapped_samples_mqc.tsv in the MultiQC data) is ported inside the
 # multiqc rule
 min_mapped_reads = 1000
@@ -629,7 +633,11 @@ output = [
     "kraken2/{sample}.unclassified_2.fastq.gz",
 ]
 description = "Classify and filter host reads with Kraken2 (upstream KRAKEN2_KRAKEN2)"
-when = "!config.skip_kraken2"
+# upstream drops samples whose fastp output is empty after filtering
+# (wrapped in `if (!params.skip_fastp)`), so the gate carries the same
+# short-circuit prefix — with skip_fastp=true the fastp outputs do not
+# exist and upstream applies no drop
+when = "!config.skip_kraken2 && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
 depends_on = ["untar_kraken2_db"]
 shell = """
 mkdir -p kraken2
@@ -678,7 +686,9 @@ output = [
     "variants/bowtie2/log/{sample}.bowtie2.log",
 ]
 description = "Map reads to the reference with Bowtie2 and filter unmapped reads (upstream BOWTIE2_ALIGN)"
-when = "!config.skip_variants"
+# same fastp empty-after-filtering drop as kraken2 (upstream feeds both
+# consumers from the filtered ch_variants_fastq channel)
+when = "!config.skip_variants && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
 shell = """
 mkdir -p variants/bowtie2 variants/bowtie2/log
 INDEX=`find -L reference/bowtie2 -name "*.rev.1.bt2" | sed "s/\\.rev.1.bt2$//"`
@@ -2357,7 +2367,10 @@ output = [
     "kraken2/{sample}.unclassified_2.fastq.gz",
 ]
 description = "Pass trimmed reads through to the assembly branch when Kraken2 host filtering is off (upstream channel wiring: ch_assembly_fastq = ch_variants_fastq)"
-when = "config.skip_kraken2 || !config.kraken2_assembly_host_filter"
+# same fastp empty-after-filtering drop as kraken2 (ch_assembly_fastq is
+# assigned from the already-filtered ch_variants_fastq); the fastp conjunct
+# applies on both branches of the host-filter choice
+when = "(config.skip_kraken2 || !config.kraken2_assembly_host_filter) && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
 shell = """
 cp {input[0]} {output[0]}
 cp {input[1]} {output[1]}
