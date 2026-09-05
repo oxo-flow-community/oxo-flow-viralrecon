@@ -1544,9 +1544,13 @@ else
     # carry the ivar VCF header block so downstream bcftools filters
     # (--include FORMAT/ALT_FREQ) parse the empty VCF (live:
     # consensus_filter died on 'the tag ALT_FREQ is not defined')
+    # NOTE: the placeholder ##contig=<ID=NC_045512.2> below is the
+    # SARS-CoV-2 ref accessor of the shipped fixture and is inert for
+    # downstream FILTERs; real runs against other references are
+    # unaffected (consensus_filter matches on FORMAT tags, not contig IDs)
     echo "##fileformat=VCFv4.2" > {output[0]}
     echo "##source=iVar" >> {output[0]}
-    echo "##contig=<ID=NC_045512.2>" >> {output[0]}
+    echo "##contig=<ID=NC_045512.2>" >> {output[0]} # placeholder contig; only feeds header-parse of the empty VCF
     echo '##INFO=<ID=TYPE,Number=1,Type=String,Description="Either SNP (Single Nucleotide Polymorphism), DEL (deletion) or INS (Insertion)">' >> {output[0]}
     echo '##FILTER=<ID=PASS,Description="All filters passed">' >> {output[0]}
     echo '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">' >> {output[0]}
@@ -2371,6 +2375,13 @@ description = "Pass trimmed reads through to the assembly branch when Kraken2 ho
 # assigned from the already-filtered ch_variants_fastq); the fastp conjunct
 # applies on both branches of the host-filter choice
 when = "(config.skip_kraken2 || !config.kraken2_assembly_host_filter) && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
+# upstream routing picks exactly one producer for the assembly branch: with
+# kraken2_assembly_host_filter=false the fastp reads replace the unclassified
+# FASTQs Kraken2 wrote. Both rules declare the same kraken2/ paths, so an
+# explicit ordering edge (same idiom as quast_consensus' depends_on across
+# mutually-exclusive variants) makes the overwrite deterministic instead of a
+# last-writer-wins race when both gates are open
+depends_on = ["kraken2"]
 shell = """
 cp {input[0]} {output[0]}
 cp {input[1]} {output[1]}
@@ -3208,13 +3219,10 @@ multiqc \\
     multiqc_work/
 # Parse YAML files dumped by MultiQC to obtain metrics
 python scripts/multiqc_to_custom_csv.py --platform illumina
-# Manually remove files that we don't want in the report
-if grep -q ">skip_assembly<" multiqc_report.html; then
-    rm -f *assembly_metrics_mqc.csv
-fi
-if grep -q ">skip_variants<" multiqc_report.html; then
-    rm -f *variants_metrics_mqc.csv
-fi
+# upstream deletes sections for skipped branches from the report HTML; the
+# engine never emits those markers into the report and the *assembly/variants*
+# metrics CSVs are declared outputs written by scripts/multiqc_to_custom_csv.py
+# in the same rule, so the upstream guards were dead code here — dropped
 if [ "{config.platform}" = "illumina" ]; then
     rm -f variants/report.tsv
 fi
