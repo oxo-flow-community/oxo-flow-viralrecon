@@ -13,7 +13,7 @@ assignment and deconvolution (Pangolin, Nextclade, Freyja), de novo assembly
 with QC (Cutadapt → SPAdes / Unicycler / minia → Bandage / BLAST / QUAST /
 ABACAS / plasmidID — any comma-separated combination), and a single
 MultiQC report tying everything together. The repository ships a tiny
-end-to-end fixture (2 samples, 200 reads each, a 6 kb SARS-CoV-2-like
+end-to-end fixture (2 samples, 1000 read pairs each, a 6 kb SARS-CoV-2-like
 reference, and stub Kraken2/Pangolin/Freyja databases) so the workflow can be
 exercised without downloading anything; point the `[config]` keys at your own
 data to use it for real.
@@ -115,7 +115,7 @@ Upstream `params.*` are `[config]` keys with identical defaults:
 | `kraken2_assembly_host_filter` | `true` | `--kraken2_assembly_host_filter` |
 | `nextclade_dataset_name` / `_tag` | `sars-cov-2` / `2024-10-17--16-48-48Z` | `--nextclade_dataset_name/_tag` (MN908947.3 genome config) |
 | `pango_database` | `test/fixtures/refs/pangolin_db` | `--pango_database` |
-| `freyja_barcodes` / `freyja_lineages` | fixture CSV files | `--freyja_barcodes` / `--freyja_lineages` |
+| `freyja_barcodes` / `freyja_lineages` | fixture CSV / JSON files | `--freyja_barcodes` / `--freyja_lineages` (freyja boot parses the lineages file as the curated_lineages JSON, so it must stay JSON — the fixture CSV sibling is barcodes-side only) |
 | `freyja_repeats` / `freyja_depthcutoff` | `100` / `0` | `--freyja_repeats` / `--freyja_depthcutoff` |
 | `raw_dir` / `out_dir` | `test/fixtures/raw` / `results` | samplesheet / `--outdir` |
 | `platform` / `protocol` | `illumina` / `amplicon` | `--platform` / `--protocol` |
@@ -340,8 +340,9 @@ approximation; none silently change results:
    to the fastp reads (channel wiring) while Kraken2 still writes its
    unclassified FASTQs. The port models this with the `assembly_fastq`
    passthrough rule, which overwrites the `kraken2/` unclassified paths with
-   copies of the fastp reads (it runs after `kraken2` when both are active, so
-   the content is deterministic).
+   copies of the fastp reads; it carries `depends_on = ["kraken2"]` so the
+   overwrite is ordered (deterministic) whenever both rules are active, and
+   when `skip_kraken2=true` it is the sole producer of those paths.
 6. **`nextclade_clade_mqc.tsv`** is built by inline python instead of Nextflow
    channel code (same input CSVs, same output columns).
 7. **`min_contig_length` / `min_perc_contig_aligned`** are used directly in the
