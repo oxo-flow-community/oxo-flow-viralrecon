@@ -278,7 +278,7 @@ Ported branches (all gated off by default, mirroring the upstream
 Still excluded (see metadata.json): the nanopore platform
 (ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ — upstream
 wires per-barcode read channels with single-end meta flags, guppybasecaller
-is a commercial ONT tool and no nanopore fixture exists; structural) and the
+is a commercial ONT tool and no port-side nanopore fixture exists (upstream ships its own nanopore nf-tests — tests/test_nanopore.nf.test, conf/test_full_nanopore.config); structural) and the
 remaining runtime-filter DROPS — the `min_mapped_reads` flagstat gate and the
 zero-variant-sample filters (their reporting half is ported inside the
 multiqc rule — see deviations).
