@@ -1,10 +1,11 @@
-# oxo-flow-viralrecon — Viral assembly and intrahost variant calling for Illumina amplicon data
+# oxo-flow-viralrecon — Viral assembly and intrahost variant calling for Illumina and Oxford Nanopore amplicon data
 
 > ★ Verified · ⇄ Official port of [`nf-core/viralrecon`](https://github.com/nf-core/viralrecon) @ `3.0.0` — same tools, same versions, same commands. Part of the [oxo-flow-community catalog](https://oxo-flow-community.github.io/).
 
 [![CI](https://github.com/oxo-flow-community/oxo-flow-viralrecon/actions/workflows/ci.yml/badge.svg)](https://github.com/oxo-flow-community/oxo-flow-viralrecon/actions/workflows/ci.yml)
 
-This workflow turns paired-end Illumina amplicon reads into a complete viral
+This workflow turns paired-end Illumina amplicon reads (or Oxford Nanopore
+barcode reads — see the nanopore section below) into a complete viral
 genomics report: read QC and trimming (FastQC, fastp), host-sequence removal
 (Kraken2), alignment to a user-provided reference genome (Bowtie2), primer
 trimming (iVar), intrahost variant calling and annotation (iVar → snpEff /
@@ -62,7 +63,10 @@ data before running:
   2024-10-17--16-48-48Z`), or set `config.nextclade_dataset` to a local dataset
   directory to skip the download
 - paired-end Illumina FASTQs at `<raw_dir>/<sample>_R1.fastq.gz` and
-  `<raw_dir>/<sample>_R2.fastq.gz` (`config.raw_dir`)
+  `<raw_dir>/<sample>_R2.fastq.gz` (`config.raw_dir`), or — with
+  `platform = "nanopore"` — ONT reads as `<fastq_dir>/<barcode>XX/reads.fastq.gz`
+  (`config.fastq_dir`) with sample→barcode mappings in `config.samples_list`
+  (see the nanopore section)
 
 **(b) Compute** — resource labels map 1:1 to the upstream `withLabel` profiles
 (`process_single` 1c/6 GB, `process_low` 2c/12 GB, `process_medium` 6c/36 GB,
@@ -246,6 +250,36 @@ to it in this port:
 Ported branches (all gated off by default, mirroring the upstream
 `params` defaults; the default run is byte-for-byte the amplicon ivar path):
 
+### Nanopore platform (`platform = "nanopore"`)
+
+The upstream ARTIC chain is ported as gated rules activated with
+`--arg platform=nanopore`. Reads are discovered per-barcode from
+`config.fastq_dir` (`barcode*/reads.fastq.gz`); the sample→barcode mapping
+comes from `config.samples_list` (comma-separated, in samplesheet order —
+fixture: `S1,S2` with `barcode1`/`barcode2`), replacing the upstream CSV
+samplesheet `barcode` column. `test/fixtures/samplesheet_nanopore.tsv` holds
+the fixture mapping and `test/fixtures/raw_nanopore/barcode{1,2}/reads.fastq.gz`
+the fixture reads (200 ONT-style SE reads per barcode, clearing
+`min_barcode_reads = 100`). `test/run.sh` flips the platform and asserts the
+nanopore rule set (TDD branch-flip).
+
+| Upstream process (module) | Port rule | Notes |
+| --- | --- | --- |
+| BARCODE_QC (with channel code) | `barcode_qc_manifest` | reads `{config.fastq_dir}/barcode*/` like upstream's barcode channel discovery; fail TSVs (no sample / no barcode / under `min_barcode_reads` / under `min_guppyplex_reads`) written only on failure; envs/coreutils.yaml |
+| PYCOQC | `pycoqc` | gated on `sequencing_summary` (upstream `--summary` input); envs/pycoqc.yaml (pycoqc 2.5.2) |
+| ARTIC_GUPPYPLEX | `artic_guppyplex` | `--min-length 400 --max-length 700 --max-depth --prefix` (primer_set_version != 1200 window); envs/artic.yaml (artic 1.6.2 + htslib 1.17, upstream pin) |
+| KRAKEN2_NANOPORE | `kraken2_nanopore` | same KRAKEN2 shell, single-end flagset, unclassified-pairs passthrough to the nanopore bam branch |
+| NANOPLOT | `nanoplot` | `--N4 --info --dotplot --heatmap`; envs/nanoplot.yaml (1.46.1) |
+| ARTIC_MINION | `artic_minion` | `--threads --scheme-version`, `--skip-ringcheck` (amplicon), `-x` offset when set; envs/artic.yaml |
+| FILTER_BAM_SAMTOOLS (nanopore) | `filter_bam_samtools_nanopore` | merged: `samtools view -q 20` → sort → index → flagstat |
+| MOSDEPTH_GENOME (nanopore) | `mosdepth_genome_nanopore` | `--fast-mode --by 200`; emits the real `{prefix}.mosdepth.global.dist.txt` names |
+| MOSDEPTH_AMPLICON (nanopore) | `mosdepth_amplicon_nanopore` | `--fast-mode --use-median --thresholds ... --by collapsed.bed` + all-samples heatmap TSV |
+| FREYJA_VARIANTS (nanopore) | `freyja_variants_nanopore` | same shell on the artic VCF |
+| VCFLIB_VCFUNIQ | `vcfuniq_nanopore` | `vcfuniq` + gzip (upstream vcflib module); envs/vcflib.yaml (1.0.14) |
+| VCF_BGZIP_TABIX_STATS | `bcftools_stats_nanopore` | merged bgzip + tabix + `bcftools stats` on the artic VCF |
+| SNPEFF_ANN / SNPSIFT / QUAST / PANGOLIN / NEXTCLADE / FREYJA_BOOT / PLOT_BASE_DENSITY | shared with the Illumina chain | same rules run on the artic consensus/VCF (no duplicates) |
+| MULTIQC (nanopore pass) | `multiqc` | `scripts/multiqc_config_nanopore.yml` — upstream `assets/multiqc_config_nanopore.yml` ported verbatim minus the kraken module (same exclusion as the illumina config); expand_inputs mixes the 4 barcode-qc fail TSVs, pycoqc.json, nanopore flagstats, mosdepth global.dist + amplicon heatmap; `rm -rf quast` before the second pass (upstream drops the QUAST section to avoid duplicating the assembly report) |
+
 - `variant_caller='bcftools'` — VARIANTS_BCFTOOLS (`call_variants_bcftools`,
   `norm_vcf_bcftools`), BCFTOOLS_FILTER (`consensus_filter_bcftools`) and the
   bcftools long table (`variants_long_table_bcftools`); activates with
@@ -275,13 +309,11 @@ Ported branches (all gated off by default, mirroring the upstream
   `pangolin_updatedata` (leave `pango_database` empty)
 - ADDITIONAL_ANNOTATION — `--arg additional_annotation=path/to.gff`
 
-Still excluded (see metadata.json): the nanopore platform
-(ARTIC_GUPPYPLEX/ARTIC_MINION/NANOPLOT/PYCOQC/VCFLIB_VCFUNIQ — upstream
-wires per-barcode read channels with single-end meta flags, guppybasecaller
-is a commercial ONT tool and no nanopore fixture exists; structural) and the
-remaining runtime-filter DROPS — the `min_mapped_reads` flagstat gate and the
-zero-variant-sample filters (their reporting half is ported inside the
-multiqc rule — see deviations).
+Still excluded (see metadata.json): the guppy_basecaller/guppy_barcoder
+commercial ONT GPU tools (reads must be basecalled before the workflow;
+structural) and the remaining runtime-filter DROPS — the `min_mapped_reads`
+flagstat gate and the zero-variant-sample filters (their reporting half is
+ported inside the multiqc rule — see deviations).
 
 ### Documented deviations
 
@@ -364,6 +396,15 @@ approximation; none silently change results:
     config for documentation. (`save_ivar_trimmed_bam` does not exist at
     3.0.0 — only `save_reference`, `save_trimmed_fail`, `save_unaligned` and
     `save_mpileup` do; the latter two are now ported as in-rule switches.)
+12. **Nanopore barcode discovery is filesystem-based.** Upstream reads the
+    `barcode` column of its CSV samplesheet and globs
+    `{fastq_dir}/{barcode}*_R1_*.fastq.gz` (+ optional `sequencing_summary`).
+    The port discovers `barcode*/` directories from the filesystem like the
+    Illumina samples, with the sample→barcode mapping in
+    `config.samples_list`; the upstream fail-TSV barcode QC reporting is
+    ported as `barcode_qc_manifest`. The ARTIC_MINION optional artic JSON
+    report emit is not declared in the multiqc expand_inputs (inert to
+    MultiQC — documented deviation).
 11. **The upstream `multiqc_data/versions.yml` and `*_plots` outputs are not
     emitted — at parity, not a deviation.** Verified at the pinned 3.0.0 tag:
     the MULTIQC call receives no versions channel and the config has no
@@ -387,7 +428,8 @@ bash test/run.sh
 
 Runs `oxo-flow validate` + `lint` + `dry-run` against the default
 configuration (the repo's fixture samples; nothing is downloaded or
-executed).
+executed), then flips `platform = "nanopore"` and asserts the nanopore rule
+set appears in the plan (and the illumina-only chains do not).
 
 ## License
 

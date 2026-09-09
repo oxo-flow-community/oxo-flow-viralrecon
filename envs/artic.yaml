@@ -1,0 +1,12 @@
+# Environment for ARTIC_GUPPLEX / ARTIC_MINION — pinned exactly to the upstream
+# nf-core/artic (guppyplex / minion) module.
+# htslib pinned alongside artic: can't be updated due to dependency issues
+# (same constraint comment as upstream modules/nf-core/artic/minion/environment.yml).
+---
+name: oxo-flow-artic
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::artic=1.6.2
+  - bioconda::htslib=1.17

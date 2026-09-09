@@ -106,6 +106,31 @@ def main():
     for sample in ("S1", "S2"):
         make_sample(sample, genome, host, rng)
         print(f"{sample}: {PAIRS_PER_SAMPLE} pairs ({int(PAIRS_PER_SAMPLE * HOST_FRACTION)} host)")
+    # --- nanopore fixtures (test/fixtures/raw_nanopore/barcode*/) ---
+    # single-end ONT-style reads off the same genome; 200 reads/barcode
+    # clears min_barcode_reads = 100. ONT read lengths are wildly variable
+    # (upstream guppyplex windows 250-1500 for primer_set_version 1200, else
+    # 400-700); sample from that distribution so artic guppyplex filters pass.
+    NP = os.path.join(HERE, "raw_nanopore")
+    for barcode in ("barcode1", "barcode2"):
+        os.makedirs(os.path.join(NP, barcode), exist_ok=True)
+        reads = []
+        for i in range(200):
+            start = rng.randrange(len(genome))
+            rlen = rng.randint(400, 700)
+            frag = genome[start : start + rlen]
+            if len(frag) < rlen:
+                frag = frag + genome[: rlen - len(frag)]
+            frag = "".join(
+                c if rng.random() > 0.07 else rng.choice([b for b in "ACGT" if b != c])
+                for c in frag
+            )
+            # ONT qualities: mostly Q12-Q20 (Phred+33 chars 5-9 => low)
+            q = "".join(chr(33 + rng.randint(10, 20)) for _ in frag)
+            reads.append(f"@{barcode}_read{i}\n{frag}\n+\n{q}")
+        with gzip.open(os.path.join(NP, barcode, "reads.fastq.gz"), "wt") as fh:
+            fh.write("\n".join(reads) + "\n")
+        print(f"{barcode}: 200 SE reads (400-700bp, ONT qualities)")
     print("viralrecon fixtures regenerated: 150bp PE, 50x, 5% host reads, declining qualities")
 
 
