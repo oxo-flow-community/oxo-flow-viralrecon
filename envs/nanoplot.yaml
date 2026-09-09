@@ -1,0 +1,9 @@
+# Environment for NANOPLOT — pinned exactly to the upstream
+# nf-core/nanoplot module.
+---
+name: oxo-flow-nanoplot
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::nanoplot=1.46.1

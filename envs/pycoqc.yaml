@@ -1,0 +1,9 @@
+# Environment for PYCOQC — pinned exactly to the upstream
+# nf-core/pycoqc module.
+---
+name: oxo-flow-pycoqc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::pycoqc=2.5.2

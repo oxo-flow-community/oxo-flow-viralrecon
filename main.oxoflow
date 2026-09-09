@@ -37,9 +37,22 @@
 #   Branch rules that consume the same canonical outputs as the default path
 #   write to those same paths under mutually-exclusive gates (the engine
 #   accepts this).
-# - The nanopore platform branch (guppybasecaller, artic minion etc.) is not
-#   ported: guppybasecaller is a commercial ONT tool and no nanopore fixture
-#   exists; upstream workflows/nanopore are structurally distinct.
+# - The nanopore platform branch is ported as when-gated rules
+#   (`config.platform == 'nanopore'`, mutually exclusive with the illumina
+#   branch's shared canonical paths, like the other non-default branches).
+#   Pipeline: pycoQC -> artic guppyplex -> Kraken2 (single-end, host
+#   removal) -> NanoPlot -> artic minion -> vcflib vcfuniq -> bcftools
+#   stats -> samtools view/index/stats on the PLAIN artic sorted.bam
+#   (reporting) -> mosdepth genome+amplicon and Freyja on the PRIMERTRIMMED
+#   bam -> consensus (canonical variants/ivar/consensus path so the shared
+#   Pangolin/Nextclade/Quast/QC rules work unchanged) -> snpEff/SnpSift ->
+#   variants long table -> MultiQC. The sample->barcode join uses the
+#   engine's workflow-level metadata_file (`{meta.barcode}`); a
+#   barcode-QC manifest rule reproduces the upstream barcode
+#   discovery/count/join channel logic and its fail TSVs.
+#   GUPPYBASECALLER remains excluded with reason: guppy/guppyplex base
+#   calling is a commercial ONT GPU tool — guppyplex itself is ported and
+#   consumes pre-basecalled fastq directories.
 # - Runtime channel filters, partially adopted (engine 0.17.0 `when`
 #   runtime functions): the fastp empty-after-filtering drop is ported as
 #   `reads_count(...) > 0` gates on the consumers of the trimmed reads
@@ -54,6 +67,10 @@ name = "oxo-flow-viralrecon"
 version = "1.0.0"
 description = "Viral assembly and intrahost variant calling: FastQC, fastp trimming, Kraken2 host removal, Bowtie2 alignment, iVar primer trimming + variant calling, snpEff/SnpSift annotation, bcftools consensus, Pangolin/Nextclade lineage calling, SPAdes de novo assembly, MultiQC"
 author = "oxo-flow-community"
+# upstream samplesheet_nanopore.csv — the sample->barcode lookup feeding
+# {meta.barcode} in the nanopore rules (first column = sample id matching the
+# sample domain; rows do NOT define the sample set). [workflow]-level key.
+metadata_file = "test/fixtures/samplesheet_nanopore.tsv"
 
 [config]
 # --- Reference files (upstream --fasta / --gff / --primer_bed) ---
@@ -186,10 +203,41 @@ filter_duplicates = false
 additional_annotation = ""
 # --- MultiQC ---
 multiqc_title = ""
+# --- Nanopore platform (upstream params, all off/empty by default except
+#     the barcode-read thresholds which match upstream defaults). These keys
+#     only matter when platform = 'nanopore'. ---
+# upstream params.fastq_dir — directory of per-barcode subdirectories
+# (barcodeNN/) holding the basecalled .fastq(.gz) files
+fastq_dir = "test/fixtures/raw_nanopore"
+# upstream params.sequencing_summary — the ONT sequencing_summary.txt for
+# pycoQC; empty = no pycoQC (mirrors upstream's null default)
+sequencing_summary = ""
+min_barcode_reads = 100
+min_guppyplex_reads = 10
+# upstream params.artic_minion_model / artic_minion_model_dir — when model
+# is empty, artic minion falls back to --model-dir $(which artic)/models
+artic_minion_model = ""
+artic_minion_model_dir = ""
+skip_pycoqc = false
+skip_nanoplot = false
+# upstream params.primer_set_version — selects the guppyplex read-length
+# window: 1200 → --min-length 250 --max-length 1500, else
+# --min-length 400 --max-length 700
+primer_set_version = 400
+
+# Mirrors the [workflow] metadata_file so shell can reference
+# {config.metadata_file} directly (engine resolves {config.*} against the
+# [config] table only — same pattern as ampliseq).
+metadata_file = "test/fixtures/samplesheet_nanopore.tsv"
 
 [[sample_groups]]
 name = "cohort"
 samples = ["S1", "S2"]
+
+# Both platforms share the sample domain: the port's nanopore fixtures reuse
+# the same sample ids, with the sample->barcode join carried by
+# metadata_file (test/fixtures/samplesheet_nanopore.tsv, {meta.barcode}).
+# Upstream instead swaps the whole samplesheet per platform.
 
 # ---------------------------------------------------------------------------
 # 1. Reference preparation (upstream PREPARE_GENOME_ILLUMINA subworkflow:
@@ -348,7 +396,7 @@ name = "get_primer_fasta"
 input = ["reference/primers.bed", "reference/genome.fa"]
 output = ["reference/primers.fa"]
 description = "Extract primer sequences from the reference (upstream BEDTOOLS_GETFASTA)"
-when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && config.platform != 'nanopore'"
 shell = """
 bedtools getfasta -s -nameOnly -fi {input[1]} -bed {input[0]} -fo {output[0]}
 """
@@ -373,7 +421,7 @@ output = [
     "reference/bowtie2/genome.fa.rev.2.bt2",
 ]
 description = "Build the Bowtie2 index from the reference (upstream BOWTIE2_BUILD, process_high label)"
-when = "!config.skip_variants"
+when = "!config.skip_variants && config.platform != 'nanopore'"
 shell = """
 mkdir -p reference/bowtie2
 bowtie2-build --seed 1 --threads {threads} {input[0]} reference/bowtie2/genome.fa
@@ -417,7 +465,7 @@ output = [
     "reference/blastdb/genome.fa.nhr",
 ]
 description = "Build the BLAST nucleotide database from the reference (upstream BLAST_MAKEBLASTDB)"
-when = "!config.skip_assembly && !config.skip_blast"
+when = "!config.skip_assembly && !config.skip_blast && config.platform != 'nanopore'"
 shell = """
 mkdir -p reference/blastdb
 makeblastdb \\
@@ -475,6 +523,8 @@ name = "cat_fastq"
 input = ["{config.raw_dir}/{sample}_R1.fastq.gz", "{config.raw_dir}/{sample}_R2.fastq.gz"]
 output = ["fastp/{sample}_1.fastq.gz", "fastp/{sample}_2.fastq.gz"]
 description = "Concatenate per-sample FastQ files (upstream CAT_FASTQ)"
+# nanopore reads enter through artic guppyplex on per-barcode dirs instead
+when = "config.platform != 'nanopore'"
 shell = """
 cat {input[0]} > {output[0]}
 cat {input[1]} > {output[1]}
@@ -498,7 +548,7 @@ output = [
     "{config.out_dir}/fastqc/raw/{sample}_2_fastqc.zip",
 ]
 description = "FastQC on the raw reads (upstream FASTQC_RAW)"
-when = "!config.skip_fastqc"
+when = "!config.skip_fastqc && config.platform != 'nanopore'"
 shell = """
 mkdir -p {config.out_dir}/fastqc/raw
 # Upstream symlinks the reads to <sample>_{1,2}.fastq.gz before running
@@ -540,7 +590,7 @@ output = [
     "fastp/{sample}_2.fail.fastq.gz",
 ]
 description = "Adapter trimming with fastp (upstream FASTP, ext.args verbatim)"
-when = "!config.skip_fastp"
+when = "!config.skip_fastp && config.platform != 'nanopore'"
 shell = """
 mkdir -p fastp fastp/log
 # Upstream symlinks the input reads to <prefix>_1/2.fastq.gz before trimming
@@ -591,7 +641,7 @@ output = [
     "{config.out_dir}/fastqc/trim/{sample}_2_fastqc.zip",
 ]
 description = "FastQC on the trimmed reads (upstream FASTQC_TRIM)"
-when = "!config.skip_fastp && !config.skip_fastqc"
+when = "!config.skip_fastp && !config.skip_fastqc && config.platform != 'nanopore'"
 shell = """
 mkdir -p {config.out_dir}/fastqc/trim
 # Upstream symlinks the trimmed reads to <sample>_{1,2}.fastq.gz before
@@ -637,7 +687,7 @@ description = "Classify and filter host reads with Kraken2 (upstream KRAKEN2_KRA
 # (wrapped in `if (!params.skip_fastp)`), so the gate carries the same
 # short-circuit prefix — with skip_fastp=true the fastp outputs do not
 # exist and upstream applies no drop
-when = "!config.skip_kraken2 && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
+when = "!config.skip_kraken2 && config.platform != 'nanopore' && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
 depends_on = ["untar_kraken2_db"]
 shell = """
 mkdir -p kraken2
@@ -688,7 +738,7 @@ output = [
 description = "Map reads to the reference with Bowtie2 and filter unmapped reads (upstream BOWTIE2_ALIGN)"
 # same fastp empty-after-filtering drop as kraken2 (upstream feeds both
 # consumers from the filtered ch_variants_fastq channel)
-when = "!config.skip_variants && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
+when = "!config.skip_variants && config.platform != 'nanopore' && (!config.skip_fastp && reads_count('fastp/{sample}_1.fastp.fastq.gz') > 0)"
 shell = """
 mkdir -p variants/bowtie2 variants/bowtie2/log
 INDEX=`find -L reference/bowtie2 -name "*.rev.1.bt2" | sed "s/\\.rev.1.bt2$//"`
@@ -722,7 +772,7 @@ output = [
     "variants/bowtie2/samtools_stats/{sample}.sorted.bam.idxstats",
 ]
 description = "Sort, index and collect stats for the aligned BAM (upstream SAMTOOLS_SORT + SAMTOOLS_INDEX + BAM_STATS_SAMTOOLS)"
-when = "!config.skip_variants"
+when = "!config.skip_variants && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/bowtie2/samtools_stats
 samtools sort \\
@@ -756,7 +806,7 @@ output = [
     "variants/bowtie2/log/{sample}.ivar_trim.ivar.log",
 ]
 description = "Trim primer sequences from the aligned BAM with iVar (upstream IVAR_TRIM)"
-when = "!config.skip_variants && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/bowtie2/log
 # Upstream ext.args: -m 30 -q 20 [-e] [-x offset]
@@ -791,7 +841,7 @@ output = [
     "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.idxstats",
 ]
 description = "Sort, index and collect stats for the primer-trimmed BAM (upstream BAM_SORT_STATS_SAMTOOLS)"
-when = "!config.skip_variants && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/bowtie2/samtools_stats
 samtools sort \\
@@ -919,7 +969,7 @@ output = [
     # but CollectMultipleMetrics.pdf did not)
 ]
 description = "Collect alignment metrics with Picard (upstream PICARD_COLLECTMULTIPLEMETRICS)"
-when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_picard_metrics && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/bowtie2/picard_metrics
 # -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
@@ -987,7 +1037,7 @@ output = [
     "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.regions.bed.gz",
 ]
 description = "Genome-wide coverage with mosdepth (upstream MOSDEPTH_GENOME)"
-when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/bowtie2/mosdepth/genome
 mosdepth \\
@@ -1046,7 +1096,7 @@ output = [
 ]
 description = "Coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS_GENOME)"
 when = "!config.skip_variants && !config.skip_mosdepth"
-depends_on = ["mosdepth_genome", "mosdepth_genome_wgs"]
+depends_on = ["mosdepth_genome", "mosdepth_genome_wgs", "mosdepth_genome_nanopore"]
 shell = """
 Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
@@ -1083,7 +1133,7 @@ output = [
     "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.regions.bed.gz",
 ]
 description = "Amplicon coverage with mosdepth (upstream MOSDEPTH_AMPLICON)"
-when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/bowtie2/mosdepth/amplicon
 mosdepth \\
@@ -1112,7 +1162,7 @@ output = [
 ]
 description = "Amplicon coverage plots across all samples (upstream PLOT_MOSDEPTH_REGIONS_AMPLICON)"
 when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'amplicon'"
-depends_on = ["mosdepth_amplicon"]
+depends_on = ["mosdepth_amplicon", "mosdepth_amplicon_nanopore"]
 shell = """
 Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
@@ -1150,7 +1200,7 @@ output = [
     "variants/freyja/variants/{sample}.depth.tsv",
 ]
 description = "Call variants and depths for Freyja (upstream FREYJA_VARIANTS)"
-when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon'"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon' && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/freyja/variants
 freyja \\
@@ -1179,7 +1229,7 @@ output = [
 description = "Call variants and depths for Freyja on untrimmed reads (upstream FREYJA_VARIANTS, metagenomic branch)"
 # upstream BAM_VARIANT_DEMIX_BOOT_FREYJA runs for both protocols on ch_bam;
 # same canonical variants outputs as freyja_variants (exclusive gates)
-when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/freyja/variants
 freyja \\
@@ -1420,7 +1470,7 @@ name = "call_variants_ivar"
 input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa", "reference/genome.gff"]
 output = ["variants/ivar/{sample}.tsv", "variants/ivar/{sample}.mpileup"]
 description = "Call intrahost variants with iVar (upstream IVAR_VARIANTS)"
-when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
 mkdir -p variants/ivar
 # upstream params.save_mpileup: tee the mpileup stream to a file; off by
@@ -1525,7 +1575,7 @@ output = [
     "variants/ivar/{sample}.variant_counts_mqc.tsv",
 ]
 description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
-when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
 # -s is not enough: a header-only tsv is nonzero-size but has zero
 # variant rows and the upstream script still dies (live)
@@ -1585,7 +1635,7 @@ output = [
     "variants/ivar/{sample}.bcftools_stats.txt",
 ]
 description = "Sort, index and collect stats for the called VCF (upstream BCFTOOLS_SORT + VCF_TABIX_STATS, process_medium label)"
-when = "!config.skip_variants && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 shell = """
 # zero-record VCFs: bcftools sort strips every header field no record
 # uses, and the downstream consensus filter needs FORMAT/ALT_FREQ
@@ -1624,7 +1674,7 @@ description = "Split multi-allelic sites, sort, index and collect stats (upstrea
 # to the canonical variants/ivar/{sample}.sorted.vcf.gz so snpeff_ann,
 # consensus_filter_bcftools and variants_long_table_bcftools are shared with
 # the ivar-caller branch. Runs for both protocols (the orig vcf is canonical).
-when = "!config.skip_variants && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
+when = "!config.skip_variants && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic') && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/ivar
 bcftools norm \\
@@ -1731,7 +1781,7 @@ output = [
     "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
 ]
 description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX, iVar-caller include)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1763,7 +1813,7 @@ description = "Filter variants by allele depth (upstream BCFTOOLS_FILTER + TABIX
 # write the same canonical filtered.vcf.gz consumed by consensus_call /
 # consensus_call_wgs (mutually-exclusive gates). No protocol gate: the
 # canonical sorted.vcf.gz exists for amplicon and metagenomic alike.
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic') && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1792,7 +1842,7 @@ input = [
 ]
 output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Mask low-coverage positions and call the consensus sequence (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
 shell = """
 samtools \\
     mpileup \\
@@ -1840,7 +1890,7 @@ output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Mask low-coverage positions and call the consensus sequence on untrimmed reads (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER, metagenomic branch)"
 # upstream CONSENSUS_BCFTOOLS runs for both protocols; same canonical
 # consensus output as consensus_call (mutually-exclusive gates)
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'metagenomic'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
 shell = """
 samtools \\
     mpileup \\
@@ -1887,7 +1937,7 @@ description = "Call the consensus sequence with iVar (upstream IVAR_CONSENSUS, a
 # so the shared CONSENSUS_QC rules (quast_consensus, pangolin, nextclade,
 # plot_base_density, nextclade_clade_mqc) work unchanged for either
 # consensus caller — internal path canonicalization, see README fidelity table
-when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 samtools \\
@@ -1915,7 +1965,7 @@ name = "consensus_ivar_wgs"
 input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
 output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Call the consensus sequence with iVar on untrimmed reads (upstream IVAR_CONSENSUS, metagenomic branch)"
-when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'metagenomic'"
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 samtools \\
@@ -1951,9 +2001,10 @@ output = [
 ]
 description = "Assembly QC across consensus sequences with QUAST (upstream QUAST, consensus branch)"
 # upstream CONSENSUS_QC runs for both consensus callers and both protocols;
-# the consensus fasta is canonical so this rule serves every branch
+# the consensus fasta is canonical so this rule serves every branch —
+# including the nanopore branch, where artic_minion produces it
 when = "!config.skip_consensus && !config.skip_variants_quast"
-depends_on = ["consensus_call", "consensus_call_wgs", "consensus_ivar", "consensus_ivar_wgs"]
+depends_on = ["consensus_call", "consensus_call_wgs", "consensus_ivar", "consensus_ivar_wgs", "artic_minion"]
 shell = """
 quast.py \\
     --output-dir {output[0]} \\
@@ -1985,6 +2036,7 @@ description = "Assign lineages with Pangolin (upstream PANGOLIN_RUN)"
 # otherwise; when pango_database is empty the pangolin_run_updated rule
 # (fed by pangolin_updatedata) takes over
 when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database != ''"
+depends_on = ["artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/pangolin
 export XDG_CACHE_HOME=/tmp/.cache
@@ -2035,7 +2087,7 @@ input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/pa
 output = ["variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv"]
 description = "Assign lineages with the downloaded Pangolin data dir (upstream PANGOLIN_RUN after PANGOLIN_UPDATEDATA)"
 when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database == ''"
-depends_on = ["pangolin_updatedata"]
+depends_on = ["pangolin_updatedata", "artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/pangolin
 export XDG_CACHE_HOME=/tmp/.cache
@@ -2060,7 +2112,7 @@ input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/ne
 output = ["variants/ivar/consensus/bcftools/nextclade/{sample}.csv"]
 description = "Assign clades with Nextclade (upstream NEXTCLADE_RUN)"
 when = "!config.skip_consensus && !config.skip_nextclade"
-depends_on = ["get_nextclade_dataset"]
+depends_on = ["get_nextclade_dataset", "artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/nextclade
 nextclade \\
@@ -2091,6 +2143,7 @@ output = [
 ]
 description = "Plot consensus base density (upstream PLOT_BASE_DENSITY)"
 when = "!config.skip_consensus && !config.skip_consensus_plots"
+depends_on = ["artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/base_qc
 Rscript scripts/plot_base_density.r \\
@@ -2152,17 +2205,26 @@ input = [
     "variants/ivar/consensus/bcftools/pangolin/*.pangolin.csv",
 ]
 output = ["variants/ivar/variants_long_table.csv"]
-description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, iVar-caller query format)"
+description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE; ivar REF_DP/ALT_DP query format on illumina, AD format with --variant_caller artic_minion on nanopore, per conf/modules_nanopore.config)"
 # upstream VARIANTS_LONG_TABLE runs for both protocols; the bcftools-caller
 # query format and long table live in variants_long_table_bcftools
 when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
 depends_on = ["sort_vcf", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
+if [ "{config.platform}" = "nanopore" ]; then
+    # nanopore: modules_nanopore.config swaps BCFTOOLS_QUERY to the AD
+    # format and MAKE_VARIANTS_LONG_TABLE to --variant_caller artic_minion
+    qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%AD\\t]\\n'
+    caller=artic_minion
+else
+    qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%REF_DP\\t]\\t[%ALT_DP\\t]\\n'
+    caller=ivar
+fi
 for vcf in {input[0]}; do
     s=$(basename "$vcf" .sorted.vcf.gz)
     bcftools query \\
-        -H -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%REF_DP\\t]\\t[%ALT_DP\\t]\\n' \\
+        -H -f "$qfmt" \\
         "$vcf" \\
         > bcftools_query/${s}.bcftools_query.txt
 done
@@ -2177,7 +2239,7 @@ python scripts/make_variants_long_table.py \\
     --bcftools_query_dir ./bcftools_query \\
     --snpsift_dir ./snpsift \\
     --pangolin_dir ./pangolin \\
-    --variant_caller ivar
+    --variant_caller "$caller"
 # zero-variant samples: the script silently skips the write when every
 # query table is empty (upstream drops such samples via the
 # zero-variant-sample filter, the documented runtime-filter deviation)
@@ -2326,11 +2388,17 @@ for vcf in {input[0]}; do
         "EFF[*].FUNCLASS" "EFF[*].CODON" "EFF[*].AA" "EFF[*].AA_LEN" \\
         > snpsift_additional/${s}.snpsift.txt
     # bcftools query on the ORIGINAL called vcf (upstream BCFTOOLS_QUERY on
-    # ch_vcf, same per-caller format as the main long table)
-    if [ "{config.variant_caller}" = "ivar" ]; then
+    # ch_vcf; per-caller format on illumina, AD format + artic_minion caller
+    # on nanopore per conf/modules_nanopore.config)
+    if [ "{config.platform}" = "nanopore" ]; then
+        qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%AD\\t]\\n'
+        caller=artic_minion
+    elif [ "{config.variant_caller}" = "ivar" ]; then
         qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%REF_DP\\t]\\t[%ALT_DP\\t]\\n'
+        caller=ivar
     else
         qfmt='%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t[%DP\\t]\\t[%AD\\t]\\n'
+        caller={config.variant_caller}
     fi
     bcftools query \\
         -H -f "$qfmt" \\
@@ -2344,7 +2412,7 @@ python scripts/make_variants_long_table.py \\
     --bcftools_query_dir ./bcftools_query_additional \\
     --snpsift_dir ./snpsift_additional \\
     --pangolin_dir ./pangolin_additional \\
-    --variant_caller {config.variant_caller} \\
+    --variant_caller "$caller" \\
     --output_file additional_variants_long_table.csv
 [ -f additional_variants_long_table.csv ] || printf "SAMPLE\\n" > additional_variants_long_table.csv
 mv additional_variants_long_table.csv {output[0]}
@@ -2400,7 +2468,7 @@ name = "prepare_primer_fasta"
 input = ["reference/primers.fa"]
 output = ["assembly/cutadapt/adapters.sub.fa"]
 description = "Prepend X to primer sequences for Cutadapt (upstream PREPARE_PRIMER_FASTA)"
-when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_noninternal_primers"
+when = "config.platform != 'nanopore' && config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_noninternal_primers"
 shell = """
 mkdir -p assembly/cutadapt
 sed -r '/^[ACTGactg]+$/ s/^/X/g' {input[0]} > {output[0]}
@@ -2427,7 +2495,7 @@ output = [
     "assembly/cutadapt/log/{sample}.primer_trim.cutadapt.log",
 ]
 description = "Trim primer sequences with Cutadapt (upstream CUTADAPT)"
-when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt"
+when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && config.platform != 'nanopore'"
 shell = """
 mkdir -p assembly/cutadapt assembly/cutadapt/log
 cutadapt \\
@@ -2458,7 +2526,7 @@ output = [
     "{config.out_dir}/assembly/cutadapt/fastqc/{sample}.primer_trim_2_fastqc.zip",
 ]
 description = "FastQC on the primer-trimmed reads (upstream FASTQC, assembly branch)"
-when = "config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_fastqc"
+when = "config.platform != 'nanopore' && config.protocol == 'amplicon' && !config.skip_assembly && !config.skip_cutadapt && !config.skip_fastqc"
 shell = """
 mkdir -p {config.out_dir}/assembly/cutadapt/fastqc
 # Upstream runs FastQC with prefix <sample>.primer_trim (ext.prefix)
@@ -2500,7 +2568,7 @@ output = [
 # SPADES ext.args
 # '--${params.spades_mode}' is honored via config.spades_mode.
 description = "De novo assembly with SPAdes (upstream SPADES, --{config.spades_mode})"
-when = "!config.skip_assembly && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
+when = "config.platform != 'nanopore' && !config.skip_assembly && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 wd=$(pwd)
 mkdir -p assembly/spades/rnaviral
@@ -2563,7 +2631,7 @@ output = [
     "assembly/spades/rnaviral/bandage/{sample}.svg",
 ]
 description = "Visualise the assembly graph with Bandage (upstream BANDAGE_IMAGE, with the upstream GUNZIP_GFA step merged in)"
-when = "!config.skip_assembly && !config.skip_bandage && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
+when = "config.platform != 'nanopore' && !config.skip_assembly && !config.skip_bandage && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/bandage
 # Bandage 0.9.0 reads graphs with plain QFile and detects GFA by first-line
@@ -2597,7 +2665,7 @@ output = [
     "assembly/spades/rnaviral/blastn/{sample}.filter.blastn.txt",
 ]
 description = "BLAST the assembly scaffolds and filter hits (upstream BLAST_BLASTN + FILTER_BLASTN)"
-when = "!config.skip_assembly && !config.skip_blast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
+when = "config.platform != 'nanopore' && !config.skip_assembly && !config.skip_blast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/blastn
 gzip -c -d {input[0]} > {sample}.scaffolds.fa
@@ -2631,7 +2699,7 @@ output = [
     "assembly/spades/rnaviral/quast.spades.tsv",
 ]
 description = "Assembly QC with QUAST (upstream QUAST, assembly branch)"
-when = "!config.skip_assembly && !config.skip_assembly_quast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
+when = "config.platform != 'nanopore' && !config.skip_assembly && !config.skip_assembly_quast && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 depends_on = ["assemble_spades"]
 shell = """
 mkdir -p quast_inputs
@@ -2670,7 +2738,7 @@ output = [
     "assembly/spades/rnaviral/abacas/{sample}.abacas.unused.contigs.out",
 ]
 description = "Contiguate the assembly against the reference with ABACAS (upstream ABACAS)"
-when = "!config.skip_assembly && !config.skip_abacas && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
+when = "config.platform != 'nanopore' && !config.skip_assembly && !config.skip_abacas && (config.assemblers == 'spades' || config.assemblers == 'spades,unicycler' || config.assemblers == 'spades,minia' || config.assemblers == 'spades,unicycler,minia')"
 shell = """
 mkdir -p assembly/spades/rnaviral/abacas
 gzip -cd {input[0]} > {sample}.scaffolds.fa
@@ -3112,6 +3180,384 @@ time_limit = "8h"
 conda = "envs/plasmidid.yaml"
 
 # ---------------------------------------------------------------------------
+# 10b. Nanopore platform branch (upstream nanopore workflow branch)
+# ---------------------------------------------------------------------------
+# The nanopore branch replaces the illumina read-processing + variant-calling
+# chain: barcode dirs go through artic guppyplex -> artic minion (read
+# filtering, primer trimming, consensus, variants). samtools flagstat/stats
+# run on the PLAIN artic sorted.bam (reporting), while mosdepth/freyja and
+# the filtered-bam reporting consume the PRIMERTRIMMED bam. All rules below
+# are gated on config.platform == 'nanopore'.
+
+[[rules]]
+name = "barcode_qc_manifest"
+input = { path = "{config.fastq_dir}", pattern = "*.fastq.gz" }
+output = [
+    "qc/fail_barcodes_no_sample_mqc.tsv",
+    "qc/fail_no_barcode_samples_mqc.tsv",
+    "qc/fail_barcode_count_samples_mqc.tsv",
+    "qc/fail_guppyplex_count_samples_mqc.tsv",
+]
+description = "Barcode QC fail tables from the raw barcode dirs (upstream fail_barcodes_no_sample/fail_no_barcode_samples/fail_barcode_count/fail_guppyplex_count)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p qc
+# upstream scans barcode* dirs and counts reads per barcode (lines/4); the
+# port joins barcodes to samples via the metadata sheet barcode column
+: > qc/barcode_counts.tsv
+for d in {input[0]}/barcode*/; do
+    [ -d "$d" ] || continue
+    bc=$(basename "$d")
+    nlines=0
+    for f in "$d"*.fastq.gz "$d"*.fastq; do
+        [ -f "$f" ] || continue
+        case "$f" in
+            *.gz) nl=$(zcat "$f" | wc -l) ;;
+            *)    nl=$(wc -l < "$f") ;;
+        esac
+        nlines=$((nlines + nl))
+    done
+    printf '%s\\t%s\\n' "$bc" "$((nlines / 4))" >> qc/barcode_counts.tsv
+done
+# fail_barcodes_no_sample: barcode dirs with reads but no sample assigned
+printf 'Barcode\\tRead count\\n' > {output[0]}
+# fail_no_barcode_samples: samples whose barcode dir is missing
+printf 'Sample\\tMissing barcode\\n' > {output[1]}
+# fail_barcode_count: assigned barcodes below min_barcode_reads
+printf 'Sample\\tBarcode count\\n' > {output[2]}
+# fail_guppyplex_count: guppyplex-level counts (placeholder-empty; the port
+# counts raw barcode reads here, guppyplex yields are not pre-known)
+printf 'Sample\\tRead count\\n' > {output[3]}
+tail -n +2 {config.metadata_file} | while read -r s b; do
+    count=$(awk -v b="$b" '$1 == b {print $2}' qc/barcode_counts.tsv)
+    if [ -z "$count" ]; then
+        printf '%s\\t%s\\n' "$s" "$b" >> {output[1]}
+    elif [ "$count" -lt {config.min_barcode_reads} ]; then
+        printf '%s\\t%s\\n' "$s" "$count" >> {output[2]}
+    fi
+done
+awk 'NR == FNR { assigned[$1] = 1; next } { print }' <(tail -n +2 {config.metadata_file} | cut -f2) qc/barcode_counts.tsv | while read -r bc count; do
+    if [ -z "${assigned[$bc]}" ] 2>/dev/null; then :; fi
+    if ! grep -q "^${bc}$" <(tail -n +2 {config.metadata_file} | cut -f2); then
+        if [ "$count" -gt {config.min_barcode_reads} ]; then
+            printf '%s\\t%s\\n' "$bc" "$count"
+        fi
+    fi
+done >> {output[0]}
+rm -f qc/barcode_counts.tsv
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/coreutils.yaml"
+
+[[rules]]
+name = "pycoqc"
+input = ["{config.sequencing_summary}"]
+output = ["pycoqc/pycoqc.json"]
+description = "PycoQC on the sequencing summary (upstream PYCOQC)"
+when = "config.platform == 'nanopore' && config.sequencing_summary != '' && !config.skip_pycoqc"
+shell = """
+mkdir -p pycoqc
+pycoqc --summary_file {input[0]} --json_output {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/pycoqc.yaml"
+
+[[rules]]
+name = "artic_guppyplex"
+input = { path = "{config.fastq_dir}/{meta.barcode}", pattern = "*.fastq.gz" }
+output = ["fastq/{sample}.fastq.gz"]
+description = "Concatenate per-barcode reads with artic guppyplex (upstream ARTIC_GUPPLYPLEX)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p fastq
+prefix={sample}
+# upstream passes length bounds from the primer_set_version (1200 vs 400)
+if [ "{config.primer_set_version}" = "1200" ]; then
+    gargs="--min-length 250 --max-length 1500"
+else
+    gargs="--min-length 400 --max-length 700"
+fi
+artic guppyplex $gargs --directory "$(dirname {input[0]})" --output {sample}.fastq
+pigz -p {threads} {sample}.fastq
+mv {sample}.fastq.gz {output[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/artic.yaml"
+
+[[rules]]
+name = "kraken2_nanopore"
+input = ["fastq/{sample}.fastq.gz", "kraken2_db/k2_standard"]
+output = [
+    "kraken2/{sample}.unclassified.fastq.gz",
+    "kraken2/{sample}.report.txt",
+]
+description = "Kraken2 host filtering on guppyplex reads (upstream KRAKEN2_KRAKEN2)"
+# upstream runs KRAKEN2 unconditionally on nanopore (!skip_kraken2); the
+# kraken2_variants_host_filter flag only controls whether ARTIC_MINION
+# consumes the unclassified reads — this port always feeds ARTIC_MINION the
+# guppyplex fastq (documented deviation)
+when = "config.platform == 'nanopore' && !config.skip_kraken2"
+depends_on = ["untar_kraken2_db"]
+shell = """
+mkdir -p kraken2
+kraken2 \\
+    --db {input[1]} \\
+    --threads {threads} \\
+    --report {output[1]} \\
+    --unclassified-out {output[0]} \\
+    --gzip-compressed \\
+    {input[0]}
+# kraken2 appends _NNN to the unclassified filename; normalise
+if [ ! -s {output[0]} ]; then mv kraken2/{sample}.unclassified_* {output[0]} 2>/dev/null || true; fi
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/kraken2.yaml"
+
+[[rules]]
+name = "nanoplot"
+input = ["fastq/{sample}.fastq.gz"]
+output = ["nanoplot/{sample}/NanoStats.txt"]
+description = "NanoPlot QC on guppyplex reads (upstream NANOPLOT)"
+when = "config.platform == 'nanopore' && !config.skip_nanoplot"
+shell = """
+mkdir -p nanoplot/{sample}
+NanoPlot --fastq {input[0]} --outdir nanoplot/{sample} --N 500 --threads {threads} --maxlength 20000 --drop-outs 0.1 --tsv_stats
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/nanoplot.yaml"
+
+[[rules]]
+name = "artic_minion"
+input = ["fastq/{sample}.fastq.gz", "reference/genome.fa", "reference/primers.collapsed.bed"]
+output = [
+    "variants/artic_minion/{sample}.sorted.bam",
+    "variants/artic_minion/{sample}.sorted.bam.bai",
+    "variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam",
+    "variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam.bai",
+    "variants/artic_minion/{sample}.pass.vcf.gz",
+    "variants/artic_minion/{sample}.pass.vcf.gz.tbi",
+    "variants/ivar/consensus/bcftools/{sample}.consensus.fa",
+]
+description = "ARTIC minion read filtering, primer trimming, variant calling and consensus (upstream ARTIC_MINION)"
+when = "config.platform == 'nanopore'"
+depends_on = ["collapse_primers"]
+shell = """
+mkdir -p variants/artic_minion variants/ivar/consensus/bcftools
+# upstream exports the vbz plugin path for ont_fast5_api; keep the env var
+export HDF5_PLUGIN_PATH=$(python -c 'import ont_fast5_api; import os; print(os.path.join(os.path.dirname(ont_fast5_api.__file__), "vbz_plugin"))' 2>/dev/null || echo "$HDF5_PLUGIN_PATH")
+if [ "{config.artic_minion_model_dir}" != "" ]; then
+    model_dir_cmd="--model-dir {config.artic_minion_model_dir}"
+else
+    model_dir_cmd="--model-dir $(dirname $(which artic))/models"
+fi
+if [ "{config.artic_minion_model}" != "" ]; then
+    model_cmd="--model {config.artic_minion_model}"
+else
+    model_cmd=""
+fi
+artic minion \\
+    --threads {threads} \\
+    --read-file {input[0]} \\
+    --bed {input[2]} \\
+    --ref {input[1]} \\
+    --normalise 500 \\
+    $model_dir_cmd $model_cmd \\
+    {sample}
+# canonical output layout: the port exposes the primertrimmed bam for
+# mosdepth/freyja and copies the consensus to the shared consensus path
+cp {sample}.sorted.bam {output[0]}
+cp {sample}.sorted.bam.bai {output[1]}
+cp {sample}.primertrimmed.rg.sorted.bam {output[2]}
+cp {sample}.primertrimmed.rg.sorted.bam.bai {output[3]}
+cp {sample}.pass.vcf.gz {output[4]}
+cp {sample}.pass.vcf.gz.tbi {output[5]}
+cp {sample}.consensus.fasta {output[6]}
+"""
+
+[rules.resources]
+threads = 12
+memory = "72G"
+time_limit = "16h"
+
+[rules.environment]
+conda = "envs/artic.yaml"
+
+[[rules]]
+name = "vcfuniq_nanopore"
+input = ["variants/artic_minion/{sample}.pass.vcf.gz", "variants/artic_minion/{sample}.pass.vcf.gz.tbi"]
+output = [
+    "variants/ivar/{sample}.sorted.vcf.gz",
+    "variants/ivar/{sample}.sorted.vcf.gz.tbi",
+]
+description = "Decompose multiallelics and uniq the ARTIC pass VCF (upstream VCFLIB_VCFUNIQ)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p variants/ivar
+bcftools norm -m-any {input[0]} -Oz -o {sample}.normalised.vcf.gz 2>/dev/null
+bcftools view -f 'PASS,.' {sample}.normalised.vcf.gz | vcfuniq - | bgzip -c > {output[0]}
+tabix -p vcf -f {output[0]}
+rm -f {sample}.normalised.vcf.gz
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/vcflib.yaml"
+
+[[rules]]
+name = "bcftools_stats_nanopore"
+input = ["variants/ivar/{sample}.sorted.vcf.gz"]
+output = ["variants/bcftools_stats/{sample}.bcftools.stats.txt"]
+description = "bcftools stats on the nanopore VCF (upstream BCFTOOLS_STATS)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p variants/bcftools_stats
+bcftools stats {input[0]} > {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+time_limit = "4h"
+
+[rules.environment]
+conda = "envs/bcftools.yaml"
+
+[[rules]]
+name = "filter_bam_samtools_nanopore"
+input = ["variants/artic_minion/{sample}.sorted.bam", "variants/artic_minion/{sample}.sorted.bam.bai"]
+output = [
+    "variants/bowtie2/{sample}.mapped.sorted.bam",
+    "variants/bowtie2/{sample}.mapped.sorted.bam.bai",
+    "variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.stats.txt",
+    "variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.flagstat",
+    "variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.idxstats",
+]
+description = "Filter mapped reads and collect stats (upstream FILTER_BAM_SAMTOOLS)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p variants/bowtie2/samtools_stats
+samtools view -b -F 4 -o {output[0]} {input[0]}
+samtools index {output[0]}
+samtools stats {output[0]} > {output[2]}
+samtools flagstat {output[0]} > {output[3]}
+samtools idxstats {output[0]} > {output[4]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/samtools.yaml"
+
+[[rules]]
+name = "mosdepth_genome_nanopore"
+input = ["variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam", "variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam.bai"]
+output = [
+    "variants/mosdepth/{sample}.reference.mosdepth.global.dist.txt",
+    "variants/mosdepth/{sample}.reference.mosdepth.summary.txt",
+]
+description = "Genome-wide coverage on the primertrimmed bam (upstream MOSDEPTH genome mode)"
+when = "config.platform == 'nanopore'"
+shell = """
+mkdir -p variants/mosdepth
+mosdepth --threads {threads} --by 500 --quantize 0:1:10:30:100 --flag 0 variants/mosdepth/{sample}.reference {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/mosdepth.yaml"
+
+[[rules]]
+name = "mosdepth_amplicon_nanopore"
+input = ["variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam", "variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam.bai", "reference/primers.collapsed.bed"]
+output = [
+    "variants/mosdepth/{sample}.amplicon.cov.tsv",
+    "variants/mosdepth/all_samples_amplicon_coverage_mqc.tsv",
+]
+description = "Amplicon coverage on the primertrimmed bam (upstream MOSDEPTH amplicon mode)"
+when = "config.platform == 'nanopore'"
+depends_on = ["collapse_primers"]
+shell = """
+mkdir -p variants/mosdepth
+mosdepth --threads {threads} --by {input[2]} --flag 0 variants/mosdepth/{sample}.amplicon {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/mosdepth.yaml"
+
+[[rules]]
+name = "freyja_variants_nanopore"
+input = ["variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam", "variants/artic_minion/{sample}.primertrimmed.rg.sorted.bam.bai", "reference/genome.fa"]
+output = [
+    "variants/freyja/variants/{sample}.variants.tsv",
+    "variants/freyja/variants/{sample}.depth.tsv",
+]
+description = "Freyja variant calling on the primertrimmed bam (upstream FREYJA VARIANTS)"
+when = "config.platform == 'nanopore' && !config.skip_variants && !config.skip_freyja"
+shell = """
+mkdir -p variants/freyja/variants
+freyja \\
+    variants \\
+    --ref {input[2]} \\
+    --variants {output[0]} \\
+    --depths {output[1]} \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "36G"
+time_limit = "8h"
+
+[rules.environment]
+conda = "envs/freyja.yaml"
+
+# ---------------------------------------------------------------------------
 # 11. MultiQC (upstream MULTIQC + multiqc_to_custom_csv.py)
 # ---------------------------------------------------------------------------
 
@@ -3156,6 +3602,27 @@ expand_inputs = [
     { pattern = "assembly/unicycler/quast.unicycler", variables = {} },
     { pattern = "assembly/minia/quast.minia", variables = {} },
     { pattern = "variants/ivar/consensus/bcftools/quast.consensus", variables = {} },
+    # --- nanopore-only inputs (upstream viralrecon.nf:905-1200 mixes) ---
+    # barcode_qc fail TSVs (upstream BARCODE_QC.fail_barcodes_no_sample_mqc.tsv etc.)
+    { pattern = "qc/fail_barcodes_no_sample_mqc.tsv", variables = {} },
+    { pattern = "qc/fail_no_barcode_samples_mqc.tsv", variables = {} },
+    { pattern = "qc/fail_barcode_count_samples_mqc.tsv", variables = {} },
+    { pattern = "qc/fail_guppyplex_count_samples_mqc.tsv", variables = {} },
+    # upstream mixes PYCOQC.out.json only when sequencing_summary is set; the
+    # port's pycoqc rule is skipped under the same condition and
+    # optional_inputs_missing tolerates the absent file
+    { pattern = "pycoqc/pycoqc.json", variables = {} },
+    # upstream mixes FILTER_BAM_SAMTOOLS.out.flagstat on the nanopore branch
+    { pattern = "variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.flagstat", variables = { sample = "config.samples_list" } },
+    # upstream mixes MOSDEPTH_GENOME.out.global_txt: mosdepth writes
+    # {prefix}.mosdepth.global.dist.txt (NOT .txt-less); genome summary.txt is
+    # inert to MultiQC here — median coverage comes from the heatmap tsv path
+    # via the amplicon all_samples mqc file and the global.dist distribution
+    { pattern = "variants/mosdepth/{sample}.reference.mosdepth.global.dist.txt", variables = { sample = "config.samples_list" } },
+    # upstream mixes MOSDEPTH_AMPPLICON.out.heatmap (all_samples_amplicon_coverage_mqc.tsv)
+    { pattern = "variants/mosdepth/all_samples_amplicon_coverage_mqc.tsv", variables = {} },
+    # upstream mixes ARTIC_MINION.out.json (optional emit, inert to MultiQC —
+    # documented deviation: not declared here)
 ]
 output = [
     "{config.out_dir}/multiqc/multiqc_report.html",
@@ -3170,6 +3637,10 @@ description = "Collate all reports with MultiQC (upstream MULTIQC + multiqc_to_c
 shell = """
 mkdir -p multiqc_work {config.out_dir}/multiqc
 for f in {input}; do
+    # expand_inputs patterns for the other platform never materialise (the
+    # producing rules are platform-gated) and the engine stages missing
+    # non-optional inputs as-is — skip them here
+    [ -e "$f" ] || continue
     ln -sf "$PWD/$f" multiqc_work/
 done
 # Upstream's channel-level runtime filters are a documented deviation (the
@@ -3215,16 +3686,24 @@ args=""
 multiqc \\
     --force \\
     $args \\
-    --config scripts/multiqc_config_illumina.yml \\
+    --config scripts/multiqc_config_{config.platform}.yml \\
     multiqc_work/
 # Parse YAML files dumped by MultiQC to obtain metrics
-python scripts/multiqc_to_custom_csv.py --platform illumina
-# upstream deletes sections for skipped branches from the report HTML; the
-# engine never emits those markers into the report and the *assembly/variants*
-# metrics CSVs are declared outputs written by scripts/multiqc_to_custom_csv.py
-# in the same rule, so the upstream guards were dead code here — dropped
+python scripts/multiqc_to_custom_csv.py --platform {config.platform}
+# Manually remove files that we don't want in the report
+if grep -q ">skip_assembly<" multiqc_report.html; then
+    rm -f *assembly_metrics_mqc.csv
+fi
+if grep -q ">skip_variants<" multiqc_report.html; then
+    rm -f *variants_metrics_mqc.csv
+fi
 if [ "{config.platform}" = "illumina" ]; then
     rm -f variants/report.tsv
+fi
+# upstream multiqc module: on nanopore the QUAST section would duplicate the
+# assembly module's report — remove it before the second pass
+if [ "{config.platform}" = "nanopore" ]; then
+    rm -rf quast
 fi
 # Second pass: final report (upstream ext.args2)
 multiqc \\
@@ -3232,7 +3711,7 @@ multiqc \\
     -e general_stats \\
     --ignore *nextclade_clade_mqc.tsv \\
     $args \\
-    --config scripts/multiqc_config_illumina.yml \\
+    --config scripts/multiqc_config_{config.platform}.yml \\
     multiqc_work/
 mv multiqc_report.html {output[0]}
 rm -rf {output[1]}

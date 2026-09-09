@@ -1,0 +1,9 @@
+# Environment for VCFUNIQ_NANOPORE — pinned exactly to the upstream
+# nf-core/vcflib module.
+---
+name: oxo-flow-vcflib
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::vcflib=1.0.14
