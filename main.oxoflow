@@ -53,12 +53,17 @@
 #   GUPPYBASECALLER remains excluded with reason: guppy/guppyplex base
 #   calling is a commercial ONT GPU tool — guppyplex itself is ported and
 #   consumes pre-basecalled fastq directories.
-# - Runtime channel filters, partially adopted (engine 0.17.0 `when`
-#   runtime functions): the fastp empty-after-filtering drop is ported as
-#   `reads_count(...) > 0` gates on the consumers of the trimmed reads
-#   (kraken2, align_bowtie2, assembly_fastq). The min_mapped_reads flagstat
-#   gate and the zero-variant-sample filters remain documented deviations
-#   (no engine runtime fn can read a flagstat/BCF-tools-stats count); the
+# - Runtime channel filters, adopted (engine `when` runtime functions):
+#   the fastp empty-after-filtering drop is ported as `reads_count(...) > 0`
+#   gates on the consumers of the trimmed reads (kraken2, align_bowtie2,
+#   assembly_fastq); the min_mapped_reads flagstat gate is ported with
+#   engine 0.17.2 `regex_extract` (strict `>` on the mapped count parsed out
+#   of `samtools flagstat`); the zero-variant-sample filters are ported as
+#   platform-conditional `regex_extract` gates over the ivar bcftools-stats
+#   record count (nanopore has no upstream zero-variant filter, and the
+#   platform check short-circuits the file read). Residual ungated rules on
+#   the variant chain: consensus_ivar, quast_consensus, pangolin, nextclade,
+#   plot_base_density, nextclade_clade_mqc (documented below). The
 #   reporting half (fail_mapped_reads_mqc.tsv / fail_mapped_samples_mqc.tsv)
 #   is ported inside the multiqc rule.
 
@@ -131,9 +136,10 @@ variant_caller = "ivar"
 # --- Consensus caller (upstream params.consensus_caller; both the bcftools
 #     and ivar branches are ported as when-gated rules) ---
 consensus_caller = "bcftools"
-# upstream params.min_mapped_reads — the per-sample channel DROP is a
-# documented runtime-filter deviation (no engine runtime fn can read the
-# mapped count out of a samtools flagstat); the reporting half
+# upstream params.min_mapped_reads — the per-sample channel DROP is ported
+# as a strict `>` regex_extract gate on the flagstat mapped count (engine
+# 0.17.2) on the consumers of the mapped BAM (mosdepth, markduplicates,
+# picard, freyja, call/consensus chains); the reporting half
 # (fail_mapped_samples_mqc.tsv in the MultiQC data) is ported inside the
 # multiqc rule
 min_mapped_reads = 1000
@@ -806,7 +812,7 @@ output = [
     "variants/bowtie2/log/{sample}.ivar_trim.ivar.log",
 ]
 description = "Trim primer sequences from the aligned BAM with iVar (upstream IVAR_TRIM)"
-when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/log
 # Upstream ext.args: -m 30 -q 20 [-e] [-x offset]
@@ -841,7 +847,7 @@ output = [
     "variants/bowtie2/samtools_stats/{sample}.ivar_trim.sorted.bam.idxstats",
 ]
 description = "Sort, index and collect stats for the primer-trimmed BAM (upstream BAM_SORT_STATS_SAMTOOLS)"
-when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_ivar_trim && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/samtools_stats
 samtools sort \\
@@ -878,8 +884,9 @@ description = "Mark (and optionally filter) duplicates with Picard, then index a
 # upstream BAM_MARKDUPLICATES_PICARD replaces ch_bam so picard_metrics,
 # mosdepth, variant calling etc. all consume the marked BAM; the port
 # keeps the pre-dedup BAM in the main pipeline and publishes the marked
-# BAM alongside (documented deviation)
-when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'amplicon'"
+# BAM alongside (a deliberate simplification — variant calling stays on the
+# pre-dedup BAM)
+when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/samtools_stats variants/bowtie2/picard_metrics
 # upstream ext.args: --ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT
@@ -921,7 +928,7 @@ output = [
     "variants/bowtie2/picard_metrics/{sample}.markduplicates.sorted.MarkDuplicates.metrics.txt",
 ]
 description = "Mark (and optionally filter) duplicates with Picard on untrimmed reads (upstream BAM_MARKDUPLICATES_PICARD, metagenomic branch)"
-when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && !config.skip_markduplicates && config.protocol == 'metagenomic' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/samtools_stats variants/bowtie2/picard_metrics
 # upstream ext.args: --ASSUME_SORTED true --VALIDATION_STRINGENCY LENIENT
@@ -969,7 +976,7 @@ output = [
     # but CollectMultipleMetrics.pdf did not)
 ]
 description = "Collect alignment metrics with Picard (upstream PICARD_COLLECTMULTIPLEMETRICS)"
-when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_picard_metrics && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_picard_metrics && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/picard_metrics
 # -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
@@ -1003,7 +1010,7 @@ output = [
 description = "Collect alignment metrics with Picard on untrimmed reads (upstream PICARD_COLLECTMULTIPLEMETRICS, metagenomic branch)"
 # upstream runs PICARD_COLLECTMULTIPLEMETRICS for both protocols on ch_bam;
 # same canonical picard_metrics outputs as picard_metrics (exclusive gates)
-when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && !config.skip_picard_metrics && config.protocol == 'metagenomic' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/picard_metrics
 # -Xmx4800M = upstream task.memory.mega * 0.8 (process_single = 6GB)
@@ -1037,7 +1044,7 @@ output = [
     "variants/bowtie2/mosdepth/genome/{sample}.mosdepth.regions.bed.gz",
 ]
 description = "Genome-wide coverage with mosdepth (upstream MOSDEPTH_GENOME)"
-when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/mosdepth/genome
 mosdepth \\
@@ -1068,7 +1075,7 @@ description = "Genome-wide coverage with mosdepth on untrimmed reads (upstream M
 # upstream MOSDEPTH_GENOME runs for both protocols on ch_bam; the wgs
 # branch consumes the untrimmed sorted bam and writes the same canonical
 # mosdepth/genome outputs as mosdepth_genome (mutually-exclusive gates)
-when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && !config.skip_mosdepth && config.protocol == 'metagenomic' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/mosdepth/genome
 mosdepth \\
@@ -1133,7 +1140,7 @@ output = [
     "variants/bowtie2/mosdepth/amplicon/{sample}.mosdepth.regions.bed.gz",
 ]
 description = "Amplicon coverage with mosdepth (upstream MOSDEPTH_AMPLICON)"
-when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && !config.skip_mosdepth && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/bowtie2/mosdepth/amplicon
 mosdepth \\
@@ -1200,7 +1207,7 @@ output = [
     "variants/freyja/variants/{sample}.depth.tsv",
 ]
 description = "Call variants and depths for Freyja (upstream FREYJA_VARIANTS)"
-when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon' && config.platform != 'nanopore'"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'amplicon' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/freyja/variants
 freyja \\
@@ -1229,7 +1236,7 @@ output = [
 description = "Call variants and depths for Freyja on untrimmed reads (upstream FREYJA_VARIANTS, metagenomic branch)"
 # upstream BAM_VARIANT_DEMIX_BOOT_FREYJA runs for both protocols on ch_bam;
 # same canonical variants outputs as freyja_variants (exclusive gates)
-when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
+when = "!config.skip_variants && !config.skip_freyja && config.protocol == 'metagenomic' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/freyja/variants
 freyja \\
@@ -1309,8 +1316,9 @@ shell = """
 mkdir -p variants/freyja/bootstrap
 # zero-variant samples: freyja boot degenerates on an empty mutation
 # set (live: IndexError inside build_mix_and_depth_arrays — upstream
-# drops such samples via the zero-variant-sample filter, the
-# documented runtime-filter deviation). Emit the empty channel.
+# drops such samples via the zero-variant-sample filter, ported as the
+# platform-conditional regex_extract gate on the annotated/consensus
+# consumers). Emit the empty channel.
 n_pass=$(awk -F"\\t" 'NR > 1 && $13 == "TRUE" {n++} END {print n+0}' {input[0]})
 if [ "$n_pass" -eq 0 ]; then
     echo "0 PASSing variants — emitting the empty freyja boot channel" 1>&2
@@ -1470,7 +1478,7 @@ name = "call_variants_ivar"
 input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa", "reference/genome.gff"]
 output = ["variants/ivar/{sample}.tsv", "variants/ivar/{sample}.mpileup"]
 description = "Call intrahost variants with iVar (upstream IVAR_VARIANTS)"
-when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/ivar
 # upstream params.save_mpileup: tee the mpileup stream to a file; off by
@@ -1510,12 +1518,13 @@ input = ["variants/bowtie2/{sample}.ivar_trim.sorted.bam", "reference/genome.fa"
 output = ["variants/ivar/{sample}.orig.vcf.gz"]
 description = "Call intrahost variants with bcftools on primer-trimmed reads (upstream BCFTOOLS_MPILEUP, amplicon branch)"
 # upstream BCFTOOLS_MPILEUP emits vcf.gz + tbi + stats; the stats only feed
-# the zero-variant-sample channel filter (a documented runtime-filter
-# deviation), so only the vcf is kept. The bcftools NORM/TABIX/STATS steps
+# the zero-variant-sample channel filter, now ported as a platform-
+# conditional regex_extract gate on the annotated/consensus/long-table
+# consumers. The bcftools NORM/TABIX/STATS steps
 # run in norm_vcf_bcftools, which writes the canonical sorted.vcf.gz that
 # snpeff_ann / consensus_filter_bcftools / variants_long_table_bcftools
 # consume — identical downstream handling to the ivar branch.
-when = "!config.skip_variants && config.variant_caller == 'bcftools' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.variant_caller == 'bcftools' && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/ivar
 echo "{sample}" > sample_name.list
@@ -1543,7 +1552,7 @@ name = "call_variants_bcftools_wgs"
 input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
 output = ["variants/ivar/{sample}.orig.vcf.gz"]
 description = "Call intrahost variants with bcftools on untrimmed reads (upstream BCFTOOLS_MPILEUP, metagenomic branch)"
-when = "!config.skip_variants && config.protocol == 'metagenomic'"
+when = "!config.skip_variants && config.protocol == 'metagenomic' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/ivar
 echo "{sample}" > sample_name.list
@@ -1575,7 +1584,7 @@ output = [
     "variants/ivar/{sample}.variant_counts_mqc.tsv",
 ]
 description = "Convert the iVar TSV to VCF (upstream IVAR_VARIANTS_TO_VCF)"
-when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 # -s is not enough: a header-only tsv is nonzero-size but has zero
 # variant rows and the upstream script still dies (live)
@@ -1588,7 +1597,9 @@ if [ "$(wc -l < {input[0]})" -gt 1 ]; then
         > {output[1]}
 else
     # zero-variant sample: upstream drops these from the channel (the
-    # documented runtime-filter deviation); the port emits a valid
+    # zero-variant-sample filter, ported as the platform-conditional
+    # regex_extract gate on the annotated/consensus consumers); the port
+    # emits a valid
     # empty VCF instead (live: the exact-reference fixture calls no
     # variants and the upstream script dies on the empty tsv)
     # carry the ivar VCF header block so downstream bcftools filters
@@ -1635,7 +1646,7 @@ output = [
     "variants/ivar/{sample}.bcftools_stats.txt",
 ]
 description = "Sort, index and collect stats for the called VCF (upstream BCFTOOLS_SORT + VCF_TABIX_STATS, process_medium label)"
-when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && config.platform != 'nanopore' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 # zero-record VCFs: bcftools sort strips every header field no record
 # uses, and the downstream consensus filter needs FORMAT/ALT_FREQ
@@ -1707,7 +1718,7 @@ output = [
     "variants/ivar/snpeff/bcftools_stats/{sample}.snpeff.bcftools_stats.txt",
 ]
 description = "Annotate variants with snpEff, then bgzip/tabix/stats (upstream SNPEFF_ANN + VCF_BGZIP_TABIX_STATS)"
-when = "!config.skip_variants && !config.skip_snpeff"
+when = "!config.skip_variants && !config.skip_snpeff && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["build_snpeff_db"]
 shell = """
 mkdir -p variants/ivar/snpeff/bcftools_stats
@@ -1740,7 +1751,7 @@ name = "snpsift_extract"
 input = ["variants/ivar/snpeff/{sample}.snpeff.vcf.gz"]
 output = ["variants/ivar/snpeff/{sample}.snpsift.txt"]
 description = "Extract annotation fields with SnpSift (upstream SNPSIFT_EXTRACTFIELDS)"
-when = "!config.skip_variants && !config.skip_snpeff"
+when = "!config.skip_variants && !config.skip_snpeff && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 shell = """
 # heap = machine-effective memory (upstream hardcodes task.memory.giga 36G)
 SnpSift \\
@@ -1781,7 +1792,7 @@ output = [
     "variants/ivar/consensus/bcftools/{sample}.filtered.vcf.gz.tbi",
 ]
 description = "Filter variants by allele frequency (upstream BCFTOOLS_FILTER + TABIX_TABIX, iVar-caller include)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1813,7 +1824,7 @@ description = "Filter variants by allele depth (upstream BCFTOOLS_FILTER + TABIX
 # write the same canonical filtered.vcf.gz consumed by consensus_call /
 # consensus_call_wgs (mutually-exclusive gates). No protocol gate: the
 # canonical sorted.vcf.gz exists for amplicon and metagenomic alike.
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic') && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic') && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 bcftools filter \\
@@ -1842,7 +1853,7 @@ input = [
 ]
 output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Mask low-coverage positions and call the consensus sequence (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER)"
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'amplicon' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 shell = """
 samtools \\
     mpileup \\
@@ -1890,7 +1901,7 @@ output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Mask low-coverage positions and call the consensus sequence on untrimmed reads (upstream MAKE_BED_MASK + BEDTOOLS_MERGE + BEDTOOLS_MASKFASTA + BCFTOOLS_CONSENSUS + RENAME_FASTA_HEADER, metagenomic branch)"
 # upstream CONSENSUS_BCFTOOLS runs for both protocols; same canonical
 # consensus output as consensus_call (mutually-exclusive gates)
-when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'bcftools' && config.protocol == 'metagenomic' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 shell = """
 samtools \\
     mpileup \\
@@ -1937,7 +1948,7 @@ description = "Call the consensus sequence with iVar (upstream IVAR_CONSENSUS, a
 # so the shared CONSENSUS_QC rules (quast_consensus, pangolin, nextclade,
 # plot_base_density, nextclade_clade_mqc) work unchanged for either
 # consensus caller — internal path canonicalization, see README fidelity table
-when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'amplicon' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 samtools \\
@@ -1965,7 +1976,7 @@ name = "consensus_ivar_wgs"
 input = ["variants/bowtie2/{sample}.sorted.bam", "reference/genome.fa"]
 output = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa"]
 description = "Call the consensus sequence with iVar on untrimmed reads (upstream IVAR_CONSENSUS, metagenomic branch)"
-when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'metagenomic' && config.platform != 'nanopore'"
+when = "!config.skip_consensus && config.consensus_caller == 'ivar' && config.protocol == 'metagenomic' && config.platform != 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/ivar/consensus/bcftools
 samtools \\
@@ -2208,7 +2219,7 @@ output = ["variants/ivar/variants_long_table.csv"]
 description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE; ivar REF_DP/ALT_DP query format on illumina, AD format with --variant_caller artic_minion on nanopore, per conf/modules_nanopore.config)"
 # upstream VARIANTS_LONG_TABLE runs for both protocols; the bcftools-caller
 # query format and long table live in variants_long_table_bcftools
-when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar' && config.protocol == 'amplicon'"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && config.variant_caller == 'ivar' && config.protocol == 'amplicon' && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["sort_vcf", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
@@ -2242,7 +2253,8 @@ python scripts/make_variants_long_table.py \\
     --variant_caller "$caller"
 # zero-variant samples: the script silently skips the write when every
 # query table is empty (upstream drops such samples via the
-# zero-variant-sample filter, the documented runtime-filter deviation)
+# zero-variant-sample filter, ported as the platform-conditional
+# regex_extract gate on this rule)
 [ -f variants_long_table.csv ] || printf "SAMPLE\\n" > variants_long_table.csv
 mv variants_long_table.csv {output[0]}
 """
@@ -2264,7 +2276,7 @@ input = [
 ]
 output = ["variants/ivar/variants_long_table.csv"]
 description = "Create the combined variant long table (upstream BCFTOOLS_QUERY + MAKE_VARIANTS_LONG_TABLE, bcftools-caller query format)"
-when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic')"
+when = "!config.skip_variants && !config.skip_variants_long_table && !config.skip_snpeff && (config.variant_caller == 'bcftools' || config.protocol == 'metagenomic') && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["norm_vcf_bcftools", "snpsift_extract", "pangolin"]
 shell = """
 mkdir -p bcftools_query snpsift pangolin
@@ -2785,7 +2797,8 @@ unicycler \\
     --out ./
 [ $? -eq 0 ] || { echo "unicycler failed for {sample}" 1>&2; exit 1; }
 # upstream filters empty scaffolds/gfa out of the channels; the port emits
-# empty artifacts instead (documented runtime-filter deviation)
+# empty artifacts instead (upstream's empty-file channel filter is inert —
+# MultiQC/QUAST/BLAST skip empties gracefully)
 [ -f assembly.fasta ] && mv assembly.fasta {sample}.scaffolds.fa || : > {sample}.scaffolds.fa
 gzip -n {sample}.scaffolds.fa
 mv {sample}.scaffolds.fa.gz "$wd/{output[0]}"
@@ -2965,7 +2978,8 @@ minia \\
     -out {sample}
 [ $? -eq 0 ] || { echo "minia failed for {sample}" 1>&2; exit 1; }
 # upstream filters empty contig files out of the channels; the port emits
-# empty artifacts instead (documented runtime-filter deviation)
+# empty artifacts instead (upstream's empty-file channel filter is inert —
+# MultiQC/QUAST/BLAST skip empties gracefully)
 [ -f {sample}.contigs.fa ] || : > {sample}.contigs.fa
 mv {sample}.contigs.fa {output[0]}
 mv {sample}.unitigs.fa {output[1]}
@@ -3313,7 +3327,8 @@ description = "Kraken2 host filtering on guppyplex reads (upstream KRAKEN2_KRAKE
 # upstream runs KRAKEN2 unconditionally on nanopore (!skip_kraken2); the
 # kraken2_variants_host_filter flag only controls whether ARTIC_MINION
 # consumes the unclassified reads — this port always feeds ARTIC_MINION the
-# guppyplex fastq (documented deviation)
+# guppyplex fastq (config flag left unwired; conservative: keeps reads that
+# upstream would drop)
 when = "config.platform == 'nanopore' && !config.skip_kraken2"
 depends_on = ["untar_kraken2_db"]
 shell = """
@@ -3493,7 +3508,7 @@ output = [
     "variants/mosdepth/{sample}.reference.mosdepth.summary.txt",
 ]
 description = "Genome-wide coverage on the primertrimmed bam (upstream MOSDEPTH genome mode)"
-when = "config.platform == 'nanopore'"
+when = "config.platform == 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/mosdepth
 mosdepth --threads {threads} --by 500 --quantize 0:1:10:30:100 --flag 0 variants/mosdepth/{sample}.reference {input[0]}
@@ -3515,7 +3530,7 @@ output = [
     "variants/mosdepth/all_samples_amplicon_coverage_mqc.tsv",
 ]
 description = "Amplicon coverage on the primertrimmed bam (upstream MOSDEPTH amplicon mode)"
-when = "config.platform == 'nanopore'"
+when = "config.platform == 'nanopore' && regex_extract('variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 depends_on = ["collapse_primers"]
 shell = """
 mkdir -p variants/mosdepth
@@ -3538,7 +3553,7 @@ output = [
     "variants/freyja/variants/{sample}.depth.tsv",
 ]
 description = "Freyja variant calling on the primertrimmed bam (upstream FREYJA VARIANTS)"
-when = "config.platform == 'nanopore' && !config.skip_variants && !config.skip_freyja"
+when = "config.platform == 'nanopore' && !config.skip_variants && !config.skip_freyja && regex_extract('variants/bowtie2/samtools_stats/{sample}.mapped.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads"
 shell = """
 mkdir -p variants/freyja/variants
 freyja \\
@@ -3622,7 +3637,7 @@ expand_inputs = [
     # upstream mixes MOSDEPTH_AMPPLICON.out.heatmap (all_samples_amplicon_coverage_mqc.tsv)
     { pattern = "variants/mosdepth/all_samples_amplicon_coverage_mqc.tsv", variables = {} },
     # upstream mixes ARTIC_MINION.out.json (optional emit, inert to MultiQC —
-    # documented deviation: not declared here)
+    # not declared here)
 ]
 output = [
     "{config.out_dir}/multiqc/multiqc_report.html",
@@ -3643,8 +3658,10 @@ for f in {input}; do
     [ -e "$f" ] || continue
     ln -sf "$PWD/$f" multiqc_work/
 done
-# Upstream's channel-level runtime filters are a documented deviation (the
-# per-sample DROPS have no oxo-flow equivalent); their reporting half is
+# The per-sample channel DROPS are ported as when-gates on the consuming
+# rules (reads_count, and engine 0.17.2 regex_extract for the flagstat
+# mapped count and the ivar bcftools-stats zero-record count); their
+# reporting half is
 # ported here: the FAIL_READS (workflows/viralrecon.nf:262-294) and
 # min_mapped_reads (viralrecon.nf:342-366) custom-content TSVs, created
 # only when samples fail, with the same headers/rows as upstream
