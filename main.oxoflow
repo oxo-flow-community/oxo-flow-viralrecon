@@ -1108,17 +1108,24 @@ shell = """
 Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
     --output_dir ./ \\
-    --output_suffix mosdepth \\
+    --output_suffix mosdepth_genome \\
     --input_suffix .regions.bed.gz
 mkdir -p variants/bowtie2/mosdepth/genome
-mv all_samples.mosdepth.coverage.tsv {output[0]}
+# unique per-rule intermediate names: the two plot_mosdepth_* rules run
+# concurrently in the shared workflow CWD and previously raced on identical
+# all_samples.mosdepth.* names (live: one rule's mv consumed the other's
+# file between write and mv -> "mv: cannot stat", exit 0, declared outputs
+# missing). Declared output paths/names unchanged (multiqc consumes
+# .../amplicon/all_samples.mosdepth.coverage.tsv).
+[ -f all_samples.mosdepth_genome.coverage.tsv ] || : > all_samples.mosdepth_genome.coverage.tsv
+mv all_samples.mosdepth_genome.coverage.tsv {output[0]}
 # the R heatmap can fail silently on tiny cohorts (live: the coverage
 # outputs landed but the heatmap ones did not) — emit the empty
 # placeholders so the declared-output contract holds
-[ -f all_samples.mosdepth.heatmap.tsv ] || : > all_samples.mosdepth.heatmap.tsv
-[ -f all_samples.mosdepth.heatmap.pdf ] || : > all_samples.mosdepth.heatmap.pdf
-mv all_samples.mosdepth.heatmap.tsv {output[1]}
-mv all_samples.mosdepth.heatmap.pdf {output[2]}
+[ -f all_samples.mosdepth_genome.heatmap.tsv ] || : > all_samples.mosdepth_genome.heatmap.tsv
+[ -f all_samples.mosdepth_genome.heatmap.pdf ] || : > all_samples.mosdepth_genome.heatmap.pdf
+mv all_samples.mosdepth_genome.heatmap.tsv {output[1]}
+mv all_samples.mosdepth_genome.heatmap.pdf {output[2]}
 """
 
 [rules.resources]
@@ -1174,17 +1181,24 @@ shell = """
 Rscript scripts/plot_mosdepth_regions.r \\
     --input_files $(echo {input} | tr ' ' ',') \\
     --output_dir ./ \\
-    --output_suffix mosdepth \\
+    --output_suffix mosdepth_amplicon \\
     --input_suffix .regions.bed.gz
 mkdir -p variants/bowtie2/mosdepth/amplicon
-mv all_samples.mosdepth.coverage.tsv {output[0]}
+# unique per-rule intermediate names: the two plot_mosdepth_* rules run
+# concurrently in the shared workflow CWD and previously raced on identical
+# all_samples.mosdepth.* names (live: one rule's mv consumed the other's
+# file between write and mv -> "mv: cannot stat", exit 0, declared outputs
+# missing). Declared output paths/names unchanged (multiqc consumes
+# .../amplicon/all_samples.mosdepth.coverage.tsv).
+[ -f all_samples.mosdepth_amplicon.coverage.tsv ] || : > all_samples.mosdepth_amplicon.coverage.tsv
+mv all_samples.mosdepth_amplicon.coverage.tsv {output[0]}
 # the R heatmap can fail silently on tiny cohorts (live: the coverage
 # outputs landed but the heatmap ones did not) — emit the empty
 # placeholders so the declared-output contract holds
-[ -f all_samples.mosdepth.heatmap.tsv ] || : > all_samples.mosdepth.heatmap.tsv
-[ -f all_samples.mosdepth.heatmap.pdf ] || : > all_samples.mosdepth.heatmap.pdf
-mv all_samples.mosdepth.heatmap.tsv {output[1]}
-mv all_samples.mosdepth.heatmap.pdf {output[2]}
+[ -f all_samples.mosdepth_amplicon.heatmap.tsv ] || : > all_samples.mosdepth_amplicon.heatmap.tsv
+[ -f all_samples.mosdepth_amplicon.heatmap.pdf ] || : > all_samples.mosdepth_amplicon.heatmap.pdf
+mv all_samples.mosdepth_amplicon.heatmap.tsv {output[1]}
+mv all_samples.mosdepth_amplicon.heatmap.pdf {output[2]}
 """
 
 [rules.resources]
