@@ -1,8 +1,13 @@
 # Environment for QUAST (consensus and assembly branches) — pinned exactly to
 # the upstream nf-core/quast module.
+#
+# python=3.10 is pinned explicitly: quast 5.3.0 imports distutils (removed in
+# Python 3.12), so its py312/py313 conda builds crash at startup
+# (ModuleNotFoundError: No module named 'distutils', observed live).
 name: quast
 channels:
   - conda-forge
   - bioconda
 dependencies:
   - bioconda::quast=5.3.0
+  - python=3.10

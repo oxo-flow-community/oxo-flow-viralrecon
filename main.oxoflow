@@ -560,18 +560,22 @@ mkdir -p {config.out_dir}/fastqc/raw
 # Upstream symlinks the reads to <sample>_{1,2}.fastq.gz before running
 # FastQC (nf-core fastqc module), so FastQC output names ({sample}_{1,2}_fastqc.*)
 # match the declared outputs instead of the raw basenames
-[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
-[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+# Scratch symlink names are rule-unique ({sample}_fqraw_*) so concurrent
+# rules (fastqc_trim/fastp share the old {sample}_{1,2}.fastq.gz names)
+# cannot flip them mid-read under -j > 1: FastQC then fails silently with a
+# mid-read GZIP EOF and no outputs (observed live).
+[ ! -f  {sample}_fqraw_1.fastq.gz ] && ln -sf {input[0]} {sample}_fqraw_1.fastq.gz
+[ ! -f  {sample}_fqraw_2.fastq.gz ] && ln -sf {input[1]} {sample}_fqraw_2.fastq.gz
 fastqc \\
     --quiet \\
     --threads {threads} \\
     --memory 6144 \\
-    {sample}_1.fastq.gz \\
-    {sample}_2.fastq.gz
-mv {sample}_1_fastqc.html {output[0]}
-mv {sample}_2_fastqc.html {output[1]}
-mv {sample}_1_fastqc.zip {output[2]}
-mv {sample}_2_fastqc.zip {output[3]}
+    {sample}_fqraw_1.fastq.gz \\
+    {sample}_fqraw_2.fastq.gz
+mv {sample}_fqraw_1_fastqc.html {output[0]}
+mv {sample}_fqraw_2_fastqc.html {output[1]}
+mv {sample}_fqraw_1_fastqc.zip {output[2]}
+mv {sample}_fqraw_2_fastqc.zip {output[3]}
 """
 
 [rules.resources]
@@ -600,8 +604,9 @@ when = "!config.skip_fastp && config.platform != 'nanopore'"
 shell = """
 mkdir -p fastp fastp/log
 # Upstream symlinks the input reads to <prefix>_1/2.fastq.gz before trimming
-[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
-[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+# Rule-unique scratch symlink names — see fastqc_raw
+[ ! -f  {sample}_fqp_1.fastq.gz ] && ln -sf {input[0]} {sample}_fqp_1.fastq.gz
+[ ! -f  {sample}_fqp_2.fastq.gz ] && ln -sf {input[1]} {sample}_fqp_2.fastq.gz
 # upstream params.save_trimmed_fail: --failed_out keeps reads that failed
 # filtering (paired) plus the unpaired mates; off by default (empty
 # placeholders keep the declared outputs present)
@@ -614,8 +619,8 @@ else
     fail_args=""
 fi
 fastp \\
-    --in1 {sample}_1.fastq.gz \\
-    --in2 {sample}_2.fastq.gz \\
+    --in1 {sample}_fqp_1.fastq.gz \\
+    --in2 {sample}_fqp_2.fastq.gz \\
     --out1 {output[0]} \\
     --out2 {output[1]} \\
     --json {output[2]} \\
@@ -653,18 +658,19 @@ mkdir -p {config.out_dir}/fastqc/trim
 # Upstream symlinks the trimmed reads to <sample>_{1,2}.fastq.gz before
 # running FastQC, so FastQC output names ({sample}_{1,2}_fastqc.*) match the
 # declared outputs instead of the fastp basenames
-[ ! -f  {sample}_1.fastq.gz ] && ln -sf {input[0]} {sample}_1.fastq.gz
-[ ! -f  {sample}_2.fastq.gz ] && ln -sf {input[1]} {sample}_2.fastq.gz
+# Rule-unique scratch symlink names ({sample}_fqtrim_*) — see fastqc_raw
+[ ! -f  {sample}_fqtrim_1.fastq.gz ] && ln -sf {input[0]} {sample}_fqtrim_1.fastq.gz
+[ ! -f  {sample}_fqtrim_2.fastq.gz ] && ln -sf {input[1]} {sample}_fqtrim_2.fastq.gz
 fastqc \\
     --quiet \\
     --threads {threads} \\
     --memory 6144 \\
-    {sample}_1.fastq.gz \\
-    {sample}_2.fastq.gz
-mv {sample}_1_fastqc.html {output[0]}
-mv {sample}_2_fastqc.html {output[1]}
-mv {sample}_1_fastqc.zip {output[2]}
-mv {sample}_2_fastqc.zip {output[3]}
+    {sample}_fqtrim_1.fastq.gz \\
+    {sample}_fqtrim_2.fastq.gz
+mv {sample}_fqtrim_1_fastqc.html {output[0]}
+mv {sample}_fqtrim_2_fastqc.html {output[1]}
+mv {sample}_fqtrim_1_fastqc.zip {output[2]}
+mv {sample}_fqtrim_2_fastqc.zip {output[3]}
 """
 
 [rules.resources]
