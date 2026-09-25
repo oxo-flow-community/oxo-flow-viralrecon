@@ -2031,6 +2031,18 @@ description = "Assembly QC across consensus sequences with QUAST (upstream QUAST
 when = "!config.skip_consensus && !config.skip_variants_quast"
 depends_on = ["consensus_call", "consensus_call_wgs", "consensus_ivar", "consensus_ivar_wgs", "artic_minion"]
 shell = """
+# upstream channel-drop: with zero consensus sequences (e.g. every sample
+# skipped for insufficient mapped reads / zero variants) QUAST never runs
+# and multiqc tolerates its absence. This rule must still emit its declared
+# outputs, so produce an empty placeholder report instead of letting
+# quast.py fail on zero assemblies (same idiom as the plot_mosdepth
+# coverage fallback).
+if [ -z "$(ls variants/ivar/consensus/bcftools/*.consensus.fa 2>/dev/null)" ]; then
+    mkdir -p {output[0]}
+    printf 'Assembly\n' > {output[0]}/report.tsv
+    cp {output[0]}/report.tsv {output[1]}
+    exit 0
+fi
 quast.py \\
     --output-dir {output[0]} \\
     -r {input[1]} \\
@@ -2060,7 +2072,7 @@ description = "Assign lineages with Pangolin (upstream PANGOLIN_RUN)"
 # upstream PANGOLIN_RUN uses pango_database when set and PANGOLIN_UPDATEDATA
 # otherwise; when pango_database is empty the pangolin_run_updated rule
 # (fed by pangolin_updatedata) takes over
-when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database != ''"
+when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database != '' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/pangolin
@@ -2111,7 +2123,7 @@ name = "pangolin_run_updated"
 input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/pangolin_db"]
 output = ["variants/ivar/consensus/bcftools/pangolin/{sample}.pangolin.csv"]
 description = "Assign lineages with the downloaded Pangolin data dir (upstream PANGOLIN_RUN after PANGOLIN_UPDATEDATA)"
-when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database == ''"
+when = "!config.skip_consensus && !config.skip_pangolin && config.pango_database == '' && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["pangolin_updatedata", "artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/pangolin
@@ -2136,7 +2148,7 @@ name = "nextclade"
 input = ["variants/ivar/consensus/bcftools/{sample}.consensus.fa", "reference/nextclade_db"]
 output = ["variants/ivar/consensus/bcftools/nextclade/{sample}.csv"]
 description = "Assign clades with Nextclade (upstream NEXTCLADE_RUN)"
-when = "!config.skip_consensus && !config.skip_nextclade"
+when = "!config.skip_consensus && !config.skip_nextclade && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["get_nextclade_dataset", "artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/nextclade
@@ -2167,7 +2179,7 @@ output = [
     "variants/ivar/consensus/bcftools/base_qc/{sample}.consensus.ACTG_density.pdf",
 ]
 description = "Plot consensus base density (upstream PLOT_BASE_DENSITY)"
-when = "!config.skip_consensus && !config.skip_consensus_plots"
+when = "!config.skip_consensus && !config.skip_consensus_plots && regex_extract('variants/bowtie2/samtools_stats/{sample}.sorted.bam.flagstat', '^(\\d+) \\+ \\d+ mapped \\(', 1) > config.min_mapped_reads && (config.platform == 'nanopore' || regex_extract('variants/ivar/{sample}.bcftools_stats.txt', 'SN\\s*0\\s*number\\sof\\srecords:\\s*(\\d+)', 1) > 0)"
 depends_on = ["artic_minion"]
 shell = """
 mkdir -p variants/ivar/consensus/bcftools/base_qc
